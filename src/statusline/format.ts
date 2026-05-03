@@ -178,8 +178,15 @@ export function chooseLayout(stdoutColumns: number | undefined): Layout {
  *   future day        → `<weekday> HH:MM` (e.g. `Mon 14:30`)
  *
  * Uses `Intl.DateTimeFormat` for locale-aware HH:MM and weekday formatting.
+ *
+ * `now` is the reference clock in epoch ms. Callers in renderers thread their
+ * injected clock through here so output is deterministic in tests; defaults to
+ * `Date.now()` for ad-hoc callers.
  */
-export function formatResetHint(resetsAt: number | string | null | undefined): string {
+export function formatResetHint(
+  resetsAt: number | string | null | undefined,
+  now: number = Date.now(),
+): string {
   if (resetsAt === null || resetsAt === undefined) return MISSING;
   if (resetsAt === '') return MISSING;
   if (typeof resetsAt === 'number' && Number.isNaN(resetsAt)) return MISSING;
@@ -199,7 +206,6 @@ export function formatResetHint(resetsAt: number | string | null | undefined): s
   const resetDate = new Date(resetMs);
   if (!isFinite(resetDate.getTime())) return MISSING;
 
-  const now = Date.now();
   const diffMs = resetMs - now;
 
   // Treat dates in the past or at the current moment as missing.

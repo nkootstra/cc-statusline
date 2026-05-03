@@ -307,6 +307,21 @@ describe('formatResetHint — relative phrasing', () => {
     const pastEpochSec = Math.floor(Date.now() / 1000) - 60;
     expect(formatResetHint(pastEpochSec)).toBe(MISSING);
   });
+
+  it('uses the injected `now` for same-day comparison, not the wall clock', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 3, 14, 23, 0, 0));
+
+    const injectedNow = new Date(2026, 3, 15, 14, 0, 0).getTime();
+    const resetMs = new Date(2026, 3, 15, 15, 0, 0).getTime();
+    const resetEpochSec = Math.floor(resetMs / 1000);
+
+    const result = formatResetHint(resetEpochSec, injectedNow);
+
+    vi.useRealTimers();
+
+    expect(result).toBe('15:00');
+  });
 });
 
 describe('formatOptionalHint', () => {

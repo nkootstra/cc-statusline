@@ -110,13 +110,17 @@ function buildCostSegment(totalCostUsd: number): string {
   return `$${totalCostUsd.toFixed(2)}`;
 }
 
-function buildUsageBucketSegment(label: string, bucket: UsageBucket | null | undefined): string {
+function buildUsageBucketSegment(
+  label: string,
+  bucket: UsageBucket | null | undefined,
+  nowMs: number,
+): string {
   if (bucket === null || bucket === undefined) {
     return `${label} ${MISSING}`;
   }
 
   const pct = Math.round(bucket.utilization);
-  const hint = formatResetHint(bucket.resets_at ?? bucket.resetsAt);
+  const hint = formatResetHint(bucket.resets_at ?? bucket.resetsAt, nowMs);
   return [label, applyColor(`${pct}%`, colorTier(pct)), formatOptionalHint(hint)]
     .filter(Boolean)
     .join(' ');
@@ -146,10 +150,10 @@ function buildExtraUsageSegment(extra: ExtraUsage): string {
   return `$${usedDollars} / $${limitDollars} (${utilizationPct}%)`;
 }
 
-function buildFallbackUsageSegment(usage: UsageResponse): string {
+function buildFallbackUsageSegment(usage: UsageResponse, nowMs: number): string {
   return [
-    buildUsageBucketSegment('5h', usage.five_hour),
-    buildUsageBucketSegment('7d', usage.seven_day),
+    buildUsageBucketSegment('5h', usage.five_hour, nowMs),
+    buildUsageBucketSegment('7d', usage.seven_day, nowMs),
   ].join(' · ');
 }
 
@@ -160,7 +164,11 @@ function buildFallbackUsageSegment(usage: UsageResponse): string {
  * Staleness dim and STALE_MARKER are applied here.
  * Auth-state dim (fatal) is applied by the caller.
  */
-function buildUsageSegment(cache: Cache | null, isStale: boolean): { text: string; isFetching: boolean } {
+function buildUsageSegment(
+  cache: Cache | null,
+  isStale: boolean,
+  nowMs: number,
+): { text: string; isFetching: boolean } {
   if (cache === null || cache.usage === null) {
     return { text: `usage ${MISSING}${SEP}fetching…`, isFetching: true };
   }
@@ -169,7 +177,7 @@ function buildUsageSegment(cache: Cache | null, isStale: boolean): { text: strin
   const extra = usage.extra_usage;
   let figureSeg = extra?.is_enabled === true
     ? buildExtraUsageSegment(extra)
-    : buildFallbackUsageSegment(usage);
+    : buildFallbackUsageSegment(usage, nowMs);
 
   // Apply staleness dim + marker if needed.
   if (isStale) {
@@ -218,7 +226,7 @@ function renderLine(
   const costSeg = buildCostSegment(input.cost.total_cost_usd);
 
   // Build usage segment.
-  const { text: rawUsage, isFetching } = buildUsageSegment(cache, isStale);
+  const { text: rawUsage, isFetching } = buildUsageSegment(cache, isStale, nowMs);
 
   // Auth state overrides.
   let usageSeg = rawUsage;

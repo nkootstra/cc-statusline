@@ -376,6 +376,8 @@ describe('Scenario 3 (AE7): extra_usage.is_enabled=false — 5h/7d fallback', ()
 
   it('treats fallback bucket utilization as percent and accepts resets_at', async () => {
     vi.stubEnv('NO_COLOR', '1');
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 4, 3, 12, 0, 0));
     const NOW = Date.now();
     const futureResetsAt = new Date(NOW + 3 * 60 * 60 * 1000).toISOString();
     const cache = makeCacheWithUsage(
@@ -393,10 +395,40 @@ describe('Scenario 3 (AE7): extra_usage.is_enabled=false — 5h/7d fallback', ()
       { now: () => NOW },
     );
 
+    vi.useRealTimers();
+
     expect(output).toMatch(/5h 42% \[\d{2}:\d{2}\]/);
     expect(output).toMatch(/7d 67% \[\d{2}:\d{2}\]/);
     expect(output).not.toContain('4200%');
     expect(output).not.toContain('6700%');
+  });
+
+  it('reset hint is computed from the injected `now`, not the wall clock', async () => {
+    vi.stubEnv('NO_COLOR', '1');
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 3, 14, 23, 0, 0));
+
+    const injectedNow = new Date(2026, 3, 15, 14, 0, 0).getTime();
+    const resetsAt = new Date(2026, 3, 15, 15, 0, 0).toISOString();
+    const cache = makeCacheWithUsage(
+      {
+        extra_usage: { is_enabled: false },
+        five_hour: { utilization: 42, resets_at: resetsAt },
+        seven_day: { utilization: 67, resets_at: resetsAt },
+      } as Partial<UsageResponse>,
+      { lastUsageRefreshAt: injectedNow - 5 * 60 * 1000 },
+    );
+
+    const { output } = await runWithCache(
+      cache,
+      loadFixture('stdin-enterprise.json'),
+      { now: () => injectedNow },
+    );
+
+    vi.useRealTimers();
+
+    expect(output).toContain('[15:00]');
+    expect(output).not.toMatch(/\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b/);
   });
 
   it('renders placeholders when fallback buckets are null', async () => {
