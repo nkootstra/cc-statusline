@@ -31,6 +31,14 @@ Example Enterprise output:
 Opus 4.7 · $780.00 / $1000.00 (78%)
 ```
 
+## Check version
+
+```bash
+npx @nkootstra/cc-statusline --version
+```
+
+`-v` works too.
+
 ## Uninstall
 
 ```bash
