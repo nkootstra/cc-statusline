@@ -2,7 +2,7 @@
 
 ## Development setup
 
-Node 18 or later is required.
+Node 22 or later is required.
 
 ```bash
 npm install

@@ -7,7 +7,7 @@ Usage-aware Claude Code statusline. The CLI reads OAuth tokens from the macOS ke
 - TypeScript strict; `noUncheckedIndexedAccess` is on — `arr[i]` yields `T | undefined`.
 - vitest (`environment: 'node'`, 15s timeout); tsup builds a single-file CJS bundle to `dist/cli.cjs`.
 - Sole runtime dep: `write-file-atomic` (bundled via `noExternal`).
-- Node 18+.
+- Node 22+.
 
 ## Development
 
