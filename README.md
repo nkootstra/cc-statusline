@@ -1,0 +1,46 @@
+# cc-statusline
+
+Usage-aware [Claude Code](https://code.claude.com) statusline. Shows your current usage in the prompt area without leaving the terminal.
+
+## Install
+
+```bash
+npx cc-statusline init
+```
+
+The installer asks which plan you're on (Pro / Max / Enterprise) and writes the statusline command into `~/.claude/settings.json`.
+
+Claude Code only runs custom statusline commands after the current workspace is trusted. If you see `statusline skipped · restart to fix`, accept the workspace trust prompt for the project and restart Claude Code.
+
+## What you'll see
+
+- **Pro / Max**: model name plus colorized 5-hour and 7-day rate-limit utilization.
+- **Enterprise**: model name plus dollars-used / dollars-limit when monthly credits are enabled. Falls back to colorized 5-hour and 7-day rate-limit utilization.
+
+Example Pro / Max output:
+
+```text
+Opus 4.7 · 5h 102% · 7d 81% [Tue 20:00]
+```
+
+Example Enterprise output:
+
+```text
+Opus 4.7 · $780.00 / $1000.00 (78%)
+```
+
+## Uninstall
+
+```bash
+npx cc-statusline uninstall
+```
+
+Removes the statusline entry from `~/.claude/settings.json` and deletes the installed renderer. The OAuth refresh token is **not** revoked — it expires naturally.
+
+## Security note
+
+cc-statusline reads Claude Code's stored OAuth credential (macOS keychain or `~/.claude/.credentials.json`) once at install and copies it to `~/.claude/cc-statusline/cache.json` (mode `0600`). This file is rewritten as the token rotates. Compromise of your home directory exposes the same tokens Claude Code already exposes there.
+
+## Release
+
+Releases are published to npm as `cc-statusline` from version tags (`v*`) through the GitHub Actions release workflow.
