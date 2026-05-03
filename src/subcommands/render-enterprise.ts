@@ -202,7 +202,7 @@ function buildMinimalEnv(): NodeJS.ProcessEnv {
 
 function defaultSpawnFn(): SpawnFn {
   return (command: string, args: string[], opts: SpawnOptions): void => {
-    const child = spawn(command, args, { ...opts, env: buildMinimalEnv() });
+    const child = spawn(command, args, { ...opts, env: buildMinimalEnv(), shell: false });
     if (process.platform !== 'win32') {
       child.unref();
     }

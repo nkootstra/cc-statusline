@@ -219,7 +219,7 @@ async function writeInitialCache(
 
 /** Default refresh subprocess invoker. */
 function defaultSpawnRefresh(args: string[], opts: SpawnSyncOptions): SpawnRefreshResult {
-  return spawnSync(process.execPath, args, opts);
+  return spawnSync(process.execPath, args, { ...opts, shell: false });
 }
 
 // ---------------------------------------------------------------------------
