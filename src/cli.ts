@@ -16,7 +16,7 @@ Usage:
 
 Pro and Max use the same renderer; Enterprise uses cache-backed OAuth usage.
 
-Run \`npx cc-statusline --plan pro\` to get started.
+Run \`npx @nkootstra/cc-statusline --plan pro\` to get started.
 `;
 
 async function main(argv: string[]): Promise<number> {

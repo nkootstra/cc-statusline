@@ -5,10 +5,10 @@ Usage-aware [Claude Code](https://code.claude.com) statusline. Shows your curren
 ## Install
 
 ```bash
-npx cc-statusline init
+npx @nkootstra/cc-statusline --plan pro
 ```
 
-The installer asks which plan you're on (Pro / Max / Enterprise) and writes the statusline command into `~/.claude/settings.json`.
+Use `--plan pro`, `--plan max`, or `--plan enterprise`. The installer writes the statusline command into `~/.claude/settings.json`.
 
 Claude Code only runs custom statusline commands after the current workspace is trusted. If you see `statusline skipped · restart to fix`, accept the workspace trust prompt for the project and restart Claude Code.
 
@@ -34,7 +34,7 @@ Opus 4.7 · $780.00 / $1000.00 (78%)
 ## Uninstall
 
 ```bash
-npx cc-statusline uninstall
+npx @nkootstra/cc-statusline uninstall
 ```
 
 Removes the statusline entry from `~/.claude/settings.json` and deletes the installed renderer. The OAuth refresh token is **not** revoked — it expires naturally.
@@ -45,4 +45,4 @@ cc-statusline reads Claude Code's stored OAuth credential (macOS keychain or `~/
 
 ## Release
 
-Releases are published to npm as `cc-statusline` from version tags (`v*`) through the GitHub Actions release workflow.
+Releases are published to npm as `@nkootstra/cc-statusline` from version tags (`v*`) through the GitHub Actions release workflow. The installed executable remains `cc-statusline`.
