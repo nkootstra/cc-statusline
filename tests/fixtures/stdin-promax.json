@@ -1,0 +1,42 @@
+{
+  "session_id": "sess_01ProMaxExampleSession12345",
+  "transcript_path": "/Users/alice/.claude/projects/-Users-alice-code-my-project/transcript.json",
+  "cwd": "/Users/alice/code/my-project",
+  "model": {
+    "id": "claude-sonnet-4-5",
+    "display_name": "claude-sonnet-4-5"
+  },
+  "workspace": {
+    "current_dir": "/Users/alice/code/my-project",
+    "project_dir": "/Users/alice/code/my-project"
+  },
+  "version": "1.2.3",
+  "output_style": {
+    "name": "default"
+  },
+  "cost": {
+    "total_cost_usd": 0.042,
+    "total_duration_ms": 12500,
+    "total_api_duration_ms": 11800,
+    "total_lines_added": 120,
+    "total_lines_removed": 45
+  },
+  "exceeds_200k_tokens": false,
+  "context_window": {
+    "used_percentage": 22
+  },
+  "rate_limits": {
+    "five_hour": {
+      "used_percentage": 45,
+      "resetsAt": 1714502400
+    },
+    "seven_day": {
+      "used_percentage": 31,
+      "resetsAt": 1714934400
+    },
+    "seven_day_opus": {
+      "used_percentage": 10,
+      "resetsAt": 1714934400
+    }
+  }
+}

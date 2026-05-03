@@ -1,0 +1,24 @@
+{
+  "five_hour": {
+    "utilization": 42,
+    "resets_at": "2026-05-03T18:00:00.000Z"
+  },
+  "seven_day": {
+    "utilization": 67,
+    "resets_at": "2026-05-10T00:00:00.000Z"
+  },
+  "seven_day_sonnet": {
+    "utilization": 55,
+    "resets_at": "2026-05-10T00:00:00.000Z"
+  },
+  "seven_day_opus": {
+    "utilization": 31,
+    "resets_at": "2026-05-10T00:00:00.000Z"
+  },
+  "extra_usage": {
+    "is_enabled": true,
+    "utilization": 78,
+    "used_credits": 78000,
+    "monthly_limit": 100000
+  }
+}
