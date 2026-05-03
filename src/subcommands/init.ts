@@ -232,13 +232,22 @@ export async function runInit(args: string[], deps: InitDeps = {}): Promise<numb
   let credentialsPathFlag: string | undefined;
   let forceFlag = false;
 
-  for (const arg of args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
     if (arg.startsWith('--plan=')) {
       const val = arg.slice('--plan='.length).toLowerCase();
       if (val === 'pro' || val === 'max' || val === 'enterprise') {
         planFlag = val;
       } else {
         process.stderr.write(`init: unknown plan "${val}"; expected pro, max, or enterprise\n`);
+        return 1;
+      }
+    } else if (arg === '--plan') {
+      const val = args[++i]?.toLowerCase();
+      if (val === 'pro' || val === 'max' || val === 'enterprise') {
+        planFlag = val;
+      } else {
+        process.stderr.write(`init: unknown plan "${val ?? ''}"; expected pro, max, or enterprise\n`);
         return 1;
       }
     } else if (arg.startsWith('--credentials-path=')) {

@@ -215,6 +215,20 @@ describe('T2: happy path Pro non-interactive --plan=pro', () => {
     expect(s.statusLine?.command).toMatch(/render-promax/);
     expect(fs.existsSync(cachePath(tmpDir))).toBe(false);
   });
+
+  it('accepts --plan with a separate value', async () => {
+    const tmpDir = makeTmpDir();
+    makeFakeBundle(tmpDir);
+
+    const deps = baseDeps(tmpDir, { isInteractive: false });
+
+    const code = await runInit(['--plan', 'pro'], deps);
+    expect(code).toBe(0);
+
+    const s = readSettings(settingsPath(tmpDir));
+    expect(s.statusLine?.command).toMatch(/render-promax/);
+    expect(fs.existsSync(cachePath(tmpDir))).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -299,6 +313,34 @@ describe('T4: happy path Enterprise non-interactive with --credentials-path', ()
     expect(cache?.authState).toBe('ok');
 
     // Settings has render-enterprise
+    const s = readSettings(settingsPath(tmpDir));
+    expect(s.statusLine?.command).toMatch(/render-enterprise/);
+  });
+
+  it('accepts --plan enterprise with a separate value', async () => {
+    const tmpDir = makeTmpDir();
+    makeFakeBundle(tmpDir);
+
+    const credFile = path.join(tmpDir, '.claude', 'test-creds.json');
+    fs.mkdirSync(path.dirname(credFile), { recursive: true });
+    fs.writeFileSync(credFile, JSON.stringify(VALID_ENVELOPE), 'utf8');
+
+    const discoverSpy = vi.fn();
+    const spawnSpy = makeSpawnRefresh(tmpDir, { usage: MOCK_USAGE });
+
+    const deps = baseDeps(tmpDir, {
+      discoverImpl: discoverSpy as InitDeps['discoverImpl'],
+      spawnRefresh: spawnSpy,
+    });
+
+    const code = await runInit(
+      ['--plan', 'enterprise', `--credentials-path=${credFile}`, '--force'],
+      deps,
+    );
+    expect(code).toBe(0);
+    expect(discoverSpy).not.toHaveBeenCalled();
+    expect(spawnSpy).toHaveBeenCalledOnce();
+
     const s = readSettings(settingsPath(tmpDir));
     expect(s.statusLine?.command).toMatch(/render-enterprise/);
   });

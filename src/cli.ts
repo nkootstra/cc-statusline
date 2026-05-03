@@ -7,17 +7,24 @@ import { runRenderEnterprise } from './subcommands/render-enterprise';
 const HELP = `cc-statusline — usage-aware Claude Code statusline + installer
 
 Usage:
-  cc-statusline init [--plan=pro|max|enterprise] [--credentials-path=<path>] [--force]
+  cc-statusline [--plan pro|max|enterprise] [--credentials-path=<path>] [--force]
+  cc-statusline init [--plan pro|max|enterprise] [--credentials-path=<path>] [--force]
   cc-statusline uninstall
   cc-statusline render-promax       (invoked by Claude Code; reads stdin)
   cc-statusline render-enterprise   (invoked by Claude Code; reads stdin)
   cc-statusline refresh             (background token + usage refresh)
 
-Run \`npx cc-statusline init\` to get started.
+Pro and Max use the same renderer; Enterprise uses cache-backed OAuth usage.
+
+Run \`npx cc-statusline --plan pro\` to get started.
 `;
 
 async function main(argv: string[]): Promise<number> {
   const cmd = argv[2];
+
+  if (cmd?.startsWith('--') && cmd !== '--help') {
+    return runInit(argv.slice(2));
+  }
 
   switch (cmd) {
     case 'init':

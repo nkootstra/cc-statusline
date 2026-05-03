@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { builtinModules } from 'node:module';
-import { readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
 const BUNDLE = resolve(__dirname, '..', 'dist', 'cli.cjs');
@@ -31,6 +32,28 @@ describe('build smoke', () => {
     const result = spawnSync(process.execPath, [BUNDLE, '--help'], { encoding: 'utf8' });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Usage:');
+    expect(result.stdout).toContain('Pro and Max use the same renderer');
+  });
+
+  it('runs init directly with --plan pro --force', () => {
+    const home = mkdtempSync(resolve(tmpdir(), 'cc-statusline-npx-'));
+    const claudeDir = resolve(home, '.claude');
+    mkdirSync(claudeDir, { recursive: true });
+
+    const result = spawnSync(
+      process.execPath,
+      [BUNDLE, '--plan', 'pro', '--force'],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: claudeDir },
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Pro/Max statusline installed');
+
+    const settings = JSON.parse(readFileSync(resolve(claudeDir, 'settings.json'), 'utf8'));
+    expect(settings.statusLine.command).toContain('render-promax');
   });
 
   it('exits non-zero on unknown subcommand', () => {

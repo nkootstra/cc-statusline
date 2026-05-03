@@ -17,6 +17,8 @@ Claude Code only runs custom statusline commands after the current workspace is 
 - **Pro / Max**: model name plus colorized 5-hour and 7-day rate-limit utilization.
 - **Enterprise**: model name plus dollars-used / dollars-limit when monthly credits are enabled. Falls back to colorized 5-hour and 7-day rate-limit utilization.
 
+Pro and Max use the same renderer. They are separate installer choices only because Claude users know their subscription by those names; Claude Code exposes the same statusline usage fields for both.
+
 Example Pro / Max output:
 
 ```text
