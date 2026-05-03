@@ -24,9 +24,9 @@ jobs:
 
       - run: npm run typecheck
 
-      - run: npm test
-
       - run: npm run build
+
+      - run: npm test
 
       - run: npm publish --provenance --access public
         env:
