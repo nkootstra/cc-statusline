@@ -35,6 +35,15 @@ describe('build smoke', () => {
     expect(result.stdout).toContain('Pro and Max use the same renderer');
   });
 
+  it('prints the package version on --version', () => {
+    const pkg = JSON.parse(readFileSync(resolve(__dirname, '..', 'package.json'), 'utf8')) as {
+      version: string;
+    };
+    const result = spawnSync(process.execPath, [BUNDLE, '--version'], { encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(pkg.version);
+  });
+
   it('runs init directly with --plan pro --force', () => {
     const home = mkdtempSync(resolve(tmpdir(), 'cc-statusline-npx-'));
     const claudeDir = resolve(home, '.claude');

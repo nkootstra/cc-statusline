@@ -4,6 +4,17 @@ import { runRefresh } from './subcommands/refresh';
 import { runRenderPromax } from './subcommands/render-promax';
 import { runRenderEnterprise } from './subcommands/render-enterprise';
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const PKG_VERSION: string = ((): string => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const pkg = require('../package.json') as { version: string };
+    return pkg.version;
+  } catch {
+    return '0.0.0';
+  }
+})();
+
 const HELP = `cc-statusline — usage-aware Claude Code statusline + installer
 
 Usage:
@@ -13,6 +24,7 @@ Usage:
   cc-statusline render-promax       (invoked by Claude Code; reads stdin)
   cc-statusline render-enterprise   (invoked by Claude Code; reads stdin)
   cc-statusline refresh             (background token + usage refresh)
+  cc-statusline --version           (print the installed version)
 
 Pro and Max use the same renderer; Enterprise uses cache-backed OAuth usage.
 
@@ -21,6 +33,11 @@ Run \`npx @nkootstra/cc-statusline --plan pro\` to get started.
 
 async function main(argv: string[]): Promise<number> {
   const cmd = argv[2];
+
+  if (cmd === '--version' || cmd === '-v') {
+    process.stdout.write(`${PKG_VERSION}\n`);
+    return 0;
+  }
 
   if (cmd?.startsWith('--') && cmd !== '--help') {
     return runInit(argv.slice(2));
