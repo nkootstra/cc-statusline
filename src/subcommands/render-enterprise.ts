@@ -24,7 +24,7 @@ import type { ExtraUsage, UsageBucket, UsageResponse } from '../oauth/types';
 // Constants
 // ---------------------------------------------------------------------------
 
-const STALE_THRESHOLD_MS = 15 * 60 * 1000; // 15 minutes
+const STALE_THRESHOLD_MS = 60 * 1000; // 60 seconds
 
 /** Remediation hint appended when authState is 'fatal'. Must be ≤ 50 chars. */
 export const AUTH_FATAL_HINT = ' re-run init to re-auth';
@@ -105,10 +105,6 @@ function buildCtxSegment(usedPercentage: number | null | undefined): string {
   return `ctx ${applyColor(`${pct}%`, tier)}`;
 }
 
-function buildCostSegment(totalCostUsd: number): string {
-  if (totalCostUsd === 0) return '';
-  return `$${totalCostUsd.toFixed(2)}`;
-}
 
 function buildUsageBucketSegment(
   label: string,
@@ -136,18 +132,20 @@ function hasCreditUsage(extra: ExtraUsage): extra is ExtraUsage & {
     extra.monthly_limit !== undefined;
 }
 
-function buildExtraUsageSegment(extra: ExtraUsage): string {
+function buildExtraUsageSegment(extra: ExtraUsage, sessionCostUsd: number): string {
   if (!hasCreditUsage(extra)) {
     return `usage ${MISSING}`;
   }
 
-  const usedDollars = (extra.used_credits / 100).toFixed(2);
-  const limitDollars = (extra.monthly_limit / 100).toFixed(2);
+  const combinedUsd = extra.used_credits / 100 + sessionCostUsd;
+  const limitUsd = extra.monthly_limit / 100;
+  const usedDisplay = combinedUsd.toFixed(2);
+  const limitDisplay = limitUsd.toFixed(2);
   const utilizationPct = Math.round(
-    extra.utilization ?? ((extra.used_credits / extra.monthly_limit) * 100),
+    limitUsd > 0 ? (combinedUsd / limitUsd) * 100 : 0,
   );
 
-  return `$${usedDollars} / $${limitDollars} (${utilizationPct}%)`;
+  return `$${usedDisplay} / $${limitDisplay} (${utilizationPct}%)`;
 }
 
 function buildFallbackUsageSegment(usage: UsageResponse, nowMs: number): string {
@@ -168,6 +166,7 @@ function buildUsageSegment(
   cache: Cache | null,
   isStale: boolean,
   nowMs: number,
+  sessionCostUsd: number,
 ): { text: string; isFetching: boolean } {
   if (cache === null || cache.usage === null) {
     return { text: `usage ${MISSING}${SEP}fetching…`, isFetching: true };
@@ -176,7 +175,7 @@ function buildUsageSegment(
   const usage = cache.usage;
   const extra = usage.extra_usage;
   let figureSeg = extra?.is_enabled === true
-    ? buildExtraUsageSegment(extra)
+    ? buildExtraUsageSegment(extra, sessionCostUsd)
     : buildFallbackUsageSegment(usage, nowMs);
 
   // Apply staleness dim + marker if needed.
@@ -223,10 +222,9 @@ function renderLine(
 
   const modelSeg = buildModelSegment(input.model.display_name);
   const ctxSeg = buildCtxSegment(input.context_window?.used_percentage);
-  const costSeg = buildCostSegment(input.cost.total_cost_usd);
 
-  // Build usage segment.
-  const { text: rawUsage, isFetching } = buildUsageSegment(cache, isStale, nowMs);
+  // Build usage segment, folding live session cost into the enterprise spend figure.
+  const { text: rawUsage, isFetching } = buildUsageSegment(cache, isStale, nowMs, input.cost.total_cost_usd);
 
   // Auth state overrides.
   let usageSeg = rawUsage;
@@ -259,12 +257,12 @@ function renderLine(
   const layout = chooseLayout(process.stdout.columns);
 
   if (layout === 'wide') {
-    return [modelSeg, ctxSeg, usageWithHint, costSeg].filter(Boolean).join(SEP) + '\n';
+    return [modelSeg, ctxSeg, usageWithHint].filter(Boolean).join(SEP) + '\n';
   }
 
   // Narrow: two lines.
   const row1 = [modelSeg, ctxSeg].filter(Boolean).join(SEP);
-  const row2 = [usageWithHint, costSeg].filter(Boolean).join(SEP);
+  const row2 = usageWithHint;
   return row1 + '\n' + row2 + '\n';
 }
 

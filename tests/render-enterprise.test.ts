@@ -196,7 +196,7 @@ describe('golden Enterprise output', () => {
           monthly_limit: 100000,
         },
       },
-      { lastUsageRefreshAt: NOW - 5 * 60 * 1000 },
+      { lastUsageRefreshAt: NOW - 30 * 1000 },
     );
 
     const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
@@ -218,7 +218,7 @@ describe('golden Enterprise output', () => {
           resets_at: new Date(2026, 4, 5, 16, 22, 0).toISOString(),
         },
       },
-      { lastUsageRefreshAt: NOW - 5 * 60 * 1000 },
+      { lastUsageRefreshAt: NOW - 30 * 1000 },
     );
 
     const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
@@ -241,7 +241,7 @@ describe('Scenario 1 (AE2): happy path — extra_usage enabled, recent cache', (
   it('renders $780.00 / $1000.00 (78%) from usage-response.json', async () => {
     const NOW = Date.now();
     const cache = makeCacheWithUsage({}, {
-      lastUsageRefreshAt: NOW - 5 * 60 * 1000, // 5 min ago — recent
+      lastUsageRefreshAt: NOW - 30 * 1000, // 30 s ago — recent
     });
 
     const { output, exitCode, spawnCalls } = await runWithCache(
@@ -258,7 +258,7 @@ describe('Scenario 1 (AE2): happy path — extra_usage enabled, recent cache', (
 
   it('output includes model name from stdin fixture', async () => {
     const NOW = Date.now();
-    const cache = makeCacheWithUsage({}, { lastUsageRefreshAt: NOW - 1 * 60 * 1000 });
+    const cache = makeCacheWithUsage({}, { lastUsageRefreshAt: NOW - 30 * 1000 });
 
     const { output } = await runWithCache(
       cache,
@@ -298,11 +298,11 @@ describe('Scenario 1 (AE2): happy path — extra_usage enabled, recent cache', (
 // Scenario 2: Recent cache (14 min) — no spawn, no dim, no STALE_MARKER
 // ============================================================================
 
-describe('Scenario 2: recent cache (14 min) — no spawn fired, no stale markers', () => {
+describe('Scenario 2: recent cache (30 s) — no spawn fired, no stale markers', () => {
   it('does not spawn and does not append STALE_MARKER', async () => {
     const NOW = Date.now();
     const cache = makeCacheWithUsage({}, {
-      lastUsageRefreshAt: NOW - 14 * 60 * 1000, // 14 min ago — within window
+      lastUsageRefreshAt: NOW - 30 * 1000, // 30 s ago — within window
     });
 
     const { output, spawnCalls } = await runWithCache(
@@ -1048,5 +1048,175 @@ describe('Scenario 20: minimal env — no secrets passed to spawn', () => {
     }
 
     expect(env['CLAUDE_CONFIG_DIR']).toBe('/my/claude');
+  });
+});
+
+// ============================================================================
+// Scenario 21: 60-second stale threshold (new behaviour)
+// ============================================================================
+
+describe('Scenario 21: stale threshold is 60 seconds', () => {
+  it('cache 61s old triggers spawn and STALE_MARKER', async () => {
+    vi.stubEnv('NO_COLOR', '1');
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage({}, {
+      lastUsageRefreshAt: NOW - 61 * 1000, // 61 s ago — just past threshold
+    });
+
+    const { output, spawnCalls } = await runWithCache(
+      cache,
+      loadFixture('stdin-enterprise.json'),
+      { now: () => NOW },
+    );
+
+    expect(spawnCalls).toHaveLength(1);
+    expect(output).toContain(STALE_MARKER);
+  });
+
+  it('cache 59s old does NOT spawn and has no STALE_MARKER', async () => {
+    vi.stubEnv('NO_COLOR', '1');
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage({}, {
+      lastUsageRefreshAt: NOW - 59 * 1000, // 59 s ago — within threshold
+    });
+
+    const { output, spawnCalls } = await runWithCache(
+      cache,
+      loadFixture('stdin-enterprise.json'),
+      { now: () => NOW },
+    );
+
+    expect(spawnCalls).toHaveLength(0);
+    expect(output).not.toContain(STALE_MARKER);
+  });
+});
+
+// ============================================================================
+// Scenario 22: session cost folded into enterprise monthly spend
+// ============================================================================
+
+function makeStdinWithCost(totalCostUsd: number): string {
+  return JSON.stringify({
+    session_id: 'cost-test',
+    transcript_path: '/t',
+    cwd: '/c',
+    model: { id: 'claude-sonnet-4-6', display_name: 'Sonnet 4.6' },
+    workspace: { current_dir: '/c', project_dir: '/c' },
+    version: '1',
+    output_style: { name: 'default' },
+    cost: {
+      total_cost_usd: totalCostUsd,
+      total_duration_ms: 0,
+      total_api_duration_ms: 0,
+      total_lines_added: 0,
+      total_lines_removed: 0,
+    },
+    exceeds_200k_tokens: false,
+    context_window: { used_percentage: null },
+  });
+}
+
+describe('Scenario 22: session cost folded into enterprise monthly spend', () => {
+  it('adds session cost to cached spent amount', async () => {
+    vi.stubEnv('NO_COLOR', '1');
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage(
+      {
+        extra_usage: {
+          is_enabled: true,
+          utilization: 0,
+          used_credits: 11, // $0.11 cached
+          monthly_limit: 20000, // $200.00
+        },
+      },
+      { lastUsageRefreshAt: NOW - 30 * 1000 },
+    );
+
+    const { output } = await runWithCache(
+      cache,
+      makeStdinWithCost(0.08), // $0.08 session cost
+      { now: () => NOW },
+    );
+
+    // Combined: $0.11 + $0.08 = $0.19
+    expect(output).toContain('$0.19 / $200.00');
+  });
+
+  it('zero session cost renders cached amount unchanged', async () => {
+    vi.stubEnv('NO_COLOR', '1');
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage(
+      {
+        extra_usage: {
+          is_enabled: true,
+          utilization: 78,
+          used_credits: 78000,
+          monthly_limit: 100000,
+        },
+      },
+      { lastUsageRefreshAt: NOW - 30 * 1000 },
+    );
+
+    const { output } = await runWithCache(
+      cache,
+      makeStdinWithCost(0),
+      { now: () => NOW },
+    );
+
+    expect(output).toContain('$780.00 / $1000.00');
+  });
+
+  it('utilisation percentage reflects combined amount', async () => {
+    vi.stubEnv('NO_COLOR', '1');
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage(
+      {
+        extra_usage: {
+          is_enabled: true,
+          utilization: 10, // will be recalculated
+          used_credits: 10000, // $100 cached, limit $1000 = 10%
+          monthly_limit: 100000,
+        },
+      },
+      { lastUsageRefreshAt: NOW - 30 * 1000 },
+    );
+
+    // Add $50 session cost → combined $150 / $1000 = 15%
+    const { output } = await runWithCache(
+      cache,
+      makeStdinWithCost(50),
+      { now: () => NOW },
+    );
+
+    expect(output).toContain('(15%)');
+    expect(output).not.toContain('(10%)');
+  });
+
+  it('trailing session cost segment is not rendered separately for enterprise', async () => {
+    vi.stubEnv('NO_COLOR', '1');
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage(
+      {
+        extra_usage: {
+          is_enabled: true,
+          utilization: 0,
+          used_credits: 11,
+          monthly_limit: 20000,
+        },
+      },
+      { lastUsageRefreshAt: NOW - 30 * 1000 },
+    );
+
+    const { output } = await runWithCache(
+      cache,
+      makeStdinWithCost(0.08),
+      { now: () => NOW },
+    );
+
+    // The combined amount should appear once; no separate trailing cost
+    const matches = output.match(/\$0\.\d+/g) ?? [];
+    // Only one $ figure group: the combined used/limit pair
+    // i.e. "$0.19 / $200.00 (0%)" — no extra "$0.08" at the end
+    expect(output).not.toMatch(/·\s+\$0\.08/);
   });
 });
