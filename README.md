@@ -15,7 +15,7 @@ Claude Code only runs custom statusline commands after the current workspace is 
 ## What you'll see
 
 - **Pro / Max**: model name plus colorized 5-hour and 7-day rate-limit utilization.
-- **Enterprise**: model name plus dollars-used / dollars-limit when monthly credits are enabled. Falls back to colorized 5-hour and 7-day rate-limit utilization. The spend figure comes from a local cache that is refreshed in the background every 60 seconds; a ` ~` marker appears when the cached value is older than that. The trailing cost figure (e.g. `· $0.08`) is Claude Code's current-session token spend and updates independently.
+- **Enterprise**: model name plus cached monthly credits used / credits limit when monthly credits are enabled. Falls back to colorized 5-hour and 7-day rate-limit utilization. The credits figure comes from a local OAuth usage cache that is refreshed in the background every 60 seconds; a ` ~` marker appears when the cached value is older than that. When Claude Code reports a non-zero current-session cost, it appears separately as `session $...`; this is Claude Code's client-side estimate and may differ from actual billing.
 
 Pro and Max use the same renderer. They are separate installer choices only because Claude users know their subscription by those names; Claude Code exposes the same statusline usage fields for both.
 
@@ -28,7 +28,7 @@ Opus 4.7 · 5h 102% · 7d 81% [Tue 20:00]
 Example Enterprise output:
 
 ```text
-Opus 4.7 · $780.00 / $1000.00 (78%)
+Opus 4.7 · credits $780.00 / $1000.00 (78%) · session $0.08
 ```
 
 ## Check version

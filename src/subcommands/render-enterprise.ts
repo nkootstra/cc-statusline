@@ -132,20 +132,25 @@ function hasCreditUsage(extra: ExtraUsage): extra is ExtraUsage & {
     extra.monthly_limit !== undefined;
 }
 
-function buildExtraUsageSegment(extra: ExtraUsage, sessionCostUsd: number): string {
+function buildSessionCostSegment(sessionCostUsd: number): string {
+  if (sessionCostUsd === 0) return '';
+  return `session $${sessionCostUsd.toFixed(2)}`;
+}
+
+function buildExtraUsageSegment(extra: ExtraUsage): string {
   if (!hasCreditUsage(extra)) {
     return `usage ${MISSING}`;
   }
 
-  const combinedUsd = extra.used_credits / 100 + sessionCostUsd;
+  const usedUsd = extra.used_credits / 100;
   const limitUsd = extra.monthly_limit / 100;
-  const usedDisplay = combinedUsd.toFixed(2);
+  const usedDisplay = usedUsd.toFixed(2);
   const limitDisplay = limitUsd.toFixed(2);
   const utilizationPct = Math.round(
-    limitUsd > 0 ? (combinedUsd / limitUsd) * 100 : 0,
+    limitUsd > 0 ? (usedUsd / limitUsd) * 100 : 0,
   );
 
-  return `$${usedDisplay} / $${limitDisplay} (${utilizationPct}%)`;
+  return `credits $${usedDisplay} / $${limitDisplay} (${utilizationPct}%)`;
 }
 
 function buildFallbackUsageSegment(usage: UsageResponse, nowMs: number): string {
@@ -175,12 +180,18 @@ function buildUsageSegment(
   const usage = cache.usage;
   const extra = usage.extra_usage;
   let figureSeg = extra?.is_enabled === true
-    ? buildExtraUsageSegment(extra, sessionCostUsd)
+    ? buildExtraUsageSegment(extra)
     : buildFallbackUsageSegment(usage, nowMs);
 
   // Apply staleness dim + marker if needed.
   if (isStale) {
     figureSeg = applyDim(figureSeg) + STALE_MARKER;
+  }
+
+  if (extra?.is_enabled === true) {
+    figureSeg = [figureSeg, buildSessionCostSegment(sessionCostUsd)]
+      .filter(Boolean)
+      .join(SEP);
   }
 
   return { text: figureSeg, isFetching: false };
