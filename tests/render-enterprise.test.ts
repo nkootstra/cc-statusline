@@ -201,7 +201,7 @@ describe('golden Enterprise output', () => {
 
     const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
 
-    expect(output).toBe('Opus 4.7 · $780.00 / $1000.00 (78%)\n');
+    expect(output).toBe('Opus 4.7 · credits $780.00 / $1000.00 (78%)\n');
   });
 
   it('renders exact fallback bucket line', async () => {
@@ -1092,7 +1092,7 @@ describe('Scenario 21: stale threshold is 60 seconds', () => {
 });
 
 // ============================================================================
-// Scenario 22: session cost folded into enterprise monthly spend
+// Scenario 22: Enterprise credits and session cost stay source-separated
 // ============================================================================
 
 function makeStdinWithCost(totalCostUsd: number): string {
@@ -1116,8 +1116,8 @@ function makeStdinWithCost(totalCostUsd: number): string {
   });
 }
 
-describe('Scenario 22: session cost folded into enterprise monthly spend', () => {
-  it('adds session cost to cached spent amount', async () => {
+describe('Scenario 22: Enterprise credits and session cost stay source-separated', () => {
+  it('renders cached credits and live session estimate as separate segments', async () => {
     vi.stubEnv('NO_COLOR', '1');
     const NOW = Date.now();
     const cache = makeCacheWithUsage(
@@ -1125,8 +1125,8 @@ describe('Scenario 22: session cost folded into enterprise monthly spend', () =>
         extra_usage: {
           is_enabled: true,
           utilization: 0,
-          used_credits: 11, // $0.11 cached
-          monthly_limit: 20000, // $200.00
+          used_credits: 919, // $9.19 cached monthly credits
+          monthly_limit: 100000, // $1000.00
         },
       },
       { lastUsageRefreshAt: NOW - 30 * 1000 },
@@ -1134,12 +1134,13 @@ describe('Scenario 22: session cost folded into enterprise monthly spend', () =>
 
     const { output } = await runWithCache(
       cache,
-      makeStdinWithCost(0.08), // $0.08 session cost
+      makeStdinWithCost(16), // $16.00 live session estimate
       { now: () => NOW },
     );
 
-    // Combined: $0.11 + $0.08 = $0.19
-    expect(output).toContain('$0.19 / $200.00');
+    expect(output).toContain('credits $9.19 / $1000.00 (1%)');
+    expect(output).toContain('session $16.00');
+    expect(output).not.toContain('$25.19 / $1000.00');
   });
 
   it('zero session cost renders cached amount unchanged', async () => {
@@ -1164,9 +1165,10 @@ describe('Scenario 22: session cost folded into enterprise monthly spend', () =>
     );
 
     expect(output).toContain('$780.00 / $1000.00');
+    expect(output).not.toContain('session $0.00');
   });
 
-  it('utilisation percentage reflects combined amount', async () => {
+  it('utilisation percentage reflects cached credits only', async () => {
     vi.stubEnv('NO_COLOR', '1');
     const NOW = Date.now();
     const cache = makeCacheWithUsage(
@@ -1181,18 +1183,18 @@ describe('Scenario 22: session cost folded into enterprise monthly spend', () =>
       { lastUsageRefreshAt: NOW - 30 * 1000 },
     );
 
-    // Add $50 session cost → combined $150 / $1000 = 15%
     const { output } = await runWithCache(
       cache,
       makeStdinWithCost(50),
       { now: () => NOW },
     );
 
-    expect(output).toContain('(15%)');
-    expect(output).not.toContain('(10%)');
+    expect(output).toContain('credits $100.00 / $1000.00 (10%)');
+    expect(output).toContain('session $50.00');
+    expect(output).not.toContain('(15%)');
   });
 
-  it('trailing session cost segment is not rendered separately for enterprise', async () => {
+  it('renders session cost separately for enterprise', async () => {
     vi.stubEnv('NO_COLOR', '1');
     const NOW = Date.now();
     const cache = makeCacheWithUsage(
@@ -1213,10 +1215,32 @@ describe('Scenario 22: session cost folded into enterprise monthly spend', () =>
       { now: () => NOW },
     );
 
-    // The combined amount should appear once; no separate trailing cost
-    const matches = output.match(/\$0\.\d+/g) ?? [];
-    // Only one $ figure group: the combined used/limit pair
-    // i.e. "$0.19 / $200.00 (0%)" — no extra "$0.08" at the end
-    expect(output).not.toMatch(/·\s+\$0\.08/);
+    expect(output).toContain('credits $0.11 / $200.00');
+    expect(output).toMatch(/·\s+session \$0\.08/);
+    expect(output).not.toContain('$0.19 / $200.00');
+  });
+
+  it('applies stale marker only to cached credits when session cost is present', async () => {
+    vi.stubEnv('NO_COLOR', '1');
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage(
+      {
+        extra_usage: {
+          is_enabled: true,
+          used_credits: 919,
+          monthly_limit: 100000,
+        },
+      },
+      { lastUsageRefreshAt: NOW - 61 * 1000 },
+    );
+
+    const { output } = await runWithCache(
+      cache,
+      makeStdinWithCost(16),
+      { now: () => NOW },
+    );
+
+    expect(output).toContain('credits $9.19 / $1000.00 (1%) ~ · session $16.00');
+    expect(output).not.toContain('session $16.00 ~');
   });
 });
