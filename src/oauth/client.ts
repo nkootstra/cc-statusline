@@ -1,16 +1,38 @@
-import type { RefreshResult, FetchUsageResult, UsageResponse } from './types';
+import type { RefreshResult, FetchUsageResult, UsageResponse, RateLimitDiagnostics } from './types';
 
 const REFRESH_URL = 'https://platform.claude.com/v1/oauth/token';
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const BETA_HEADER = 'oauth-2025-04-20';
 const REQUEST_TIMEOUT_MS = 10_000;
+const DEFAULT_RETRY_AFTER_SECONDS = 60;
 
-function parseRetryAfter(headers: Headers): number {
+function parseRetryAfter(headers: Headers): { seconds: number; present: boolean } {
   const value = headers.get('Retry-After');
-  if (value === null) return 60;
+  if (value === null) return { seconds: DEFAULT_RETRY_AFTER_SECONDS, present: false };
   const parsed = parseInt(value, 10);
-  return isFinite(parsed) && parsed > 0 ? parsed : 60;
+  if (!isFinite(parsed) || parsed <= 0) {
+    return { seconds: DEFAULT_RETRY_AFTER_SECONDS, present: false };
+  }
+  return { seconds: parsed, present: true };
+}
+
+function parseXShouldRetry(headers: Headers): boolean | null {
+  const value = headers.get('x-should-retry');
+  if (value === null) return null;
+  const lower = value.toLowerCase().trim();
+  if (lower === 'true') return true;
+  if (lower === 'false') return false;
+  return null;
+}
+
+function buildRateLimitDiagnostics(headers: Headers): RateLimitDiagnostics {
+  const { seconds, present } = parseRetryAfter(headers);
+  return {
+    retryAfterSeconds: seconds,
+    retryAfterPresent: present,
+    xShouldRetry: parseXShouldRetry(headers),
+  };
 }
 
 export async function refresh(
@@ -85,8 +107,7 @@ export async function refresh(
   }
 
   if (status === 429) {
-    const retryAfterSeconds = parseRetryAfter(response.headers);
-    return { kind: 'rate-limited', retryAfterSeconds };
+    return { kind: 'rate-limited', ...buildRateLimitDiagnostics(response.headers) };
   }
 
   if (status >= 500) {
@@ -137,8 +158,7 @@ export async function fetchUsage(
   }
 
   if (status === 429) {
-    const retryAfterSeconds = parseRetryAfter(response.headers);
-    return { kind: 'rate-limited', retryAfterSeconds };
+    return { kind: 'rate-limited', ...buildRateLimitDiagnostics(response.headers) };
   }
 
   if (status >= 500) {

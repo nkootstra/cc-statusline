@@ -206,13 +206,14 @@ async function writeInitialCache(
   cachePath: string,
 ): Promise<void> {
   const cache: Cache = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     authState: 'ok',
     credentials,
     usage: null,
     lastUsageRefreshAt: 0,
     lastRefreshStartedAt: 0,
     lastErrorMessage: null,
+    rateLimitedUntilMs: 0,
   };
   await writeCache(cache, cachePath);
 }

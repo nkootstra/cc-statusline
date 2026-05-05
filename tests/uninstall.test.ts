@@ -71,7 +71,7 @@ function writeRenderer(dir: string): void {
 
 async function writeTestCache(dir: string): Promise<void> {
   const cache: Cache = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     authState: 'ok',
     credentials: {
       accessToken: 'sk-ant-test',
@@ -85,6 +85,7 @@ async function writeTestCache(dir: string): Promise<void> {
     lastUsageRefreshAt: Date.now(),
     lastRefreshStartedAt: 0,
     lastErrorMessage: null,
+    rateLimitedUntilMs: 0,
   };
   await writeCache(cache, getCachePath(dir));
 }

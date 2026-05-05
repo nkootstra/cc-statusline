@@ -7,13 +7,14 @@ import type { OAuthCredentials, UsageResponse } from '../oauth/types';
 export type AuthState = 'ok' | 'fatal' | 'cloudflare-blocked';
 
 export interface Cache {
-  schemaVersion: 1;
+  schemaVersion: 2;
   authState: AuthState;
   credentials: OAuthCredentials;
   usage: UsageResponse | null;
   lastUsageRefreshAt: number;     // epoch ms; 0 means never
   lastRefreshStartedAt: number;   // epoch ms; 0 means none
   lastErrorMessage: string | null; // sanitized
+  rateLimitedUntilMs: number;     // epoch ms; 0 means not rate-limited
 }
 
 export function defaultCachePath(): string {
@@ -41,15 +42,30 @@ export function readCache(cachePath?: string): Cache | null {
     return null;
   }
 
-  if (
-    typeof parsed !== 'object' ||
-    parsed === null ||
-    (parsed as Record<string, unknown>)['schemaVersion'] !== 1
-  ) {
+  if (typeof parsed !== 'object' || parsed === null) {
     return null;
   }
 
-  return parsed as Cache;
+  const obj = parsed as Record<string, unknown>;
+  const version = obj['schemaVersion'];
+
+  if (version === 2) {
+    return parsed as Cache;
+  }
+
+  // v1 → v2: additive migration. v1 carried every field except rateLimitedUntilMs.
+  // Bumping cleanly per AGENTS.md (every shape change bumps the version) while
+  // preserving the user's tokens + usage across upgrade. Anything older or
+  // unrecognized falls through to null so init can rebuild.
+  if (version === 1) {
+    return {
+      ...(obj as Omit<Cache, 'schemaVersion' | 'rateLimitedUntilMs'>),
+      schemaVersion: 2,
+      rateLimitedUntilMs: 0,
+    };
+  }
+
+  return null;
 }
 
 export async function writeCache(cache: Cache, cachePath?: string): Promise<void> {

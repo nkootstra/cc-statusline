@@ -54,13 +54,14 @@ const GOLDEN_STDIN = JSON.stringify({
 
 function makeCache(overrides: Partial<Cache> = {}): Cache {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     authState: 'ok',
     credentials: BASE_CREDENTIALS,
     usage: null,
     lastUsageRefreshAt: 0,
     lastRefreshStartedAt: 0,
     lastErrorMessage: null,
+    rateLimitedUntilMs: 0,
     ...overrides,
   };
 }
@@ -122,7 +123,12 @@ function setTTY(value: boolean | undefined): void {
 // Import the function under test
 // ---------------------------------------------------------------------------
 
-import { runRenderEnterprise, AUTH_FATAL_HINT, CLOUDFLARE_HINT } from '../src/subcommands/render-enterprise';
+import {
+  runRenderEnterprise,
+  AUTH_FATAL_HINT,
+  CLOUDFLARE_HINT,
+  RATE_LIMITED_HINT_PREFIX,
+} from '../src/subcommands/render-enterprise';
 import { STALE_MARKER, MISSING } from '../src/statusline/format';
 import * as storeModule from '../src/cache/store';
 
@@ -1242,5 +1248,101 @@ describe('Scenario 22: Enterprise credits and session cost stay source-separated
 
     expect(output).toContain('credits $9.19 / $1000.00 (1%) ~ · session $16.00');
     expect(output).not.toContain('session $16.00 ~');
+  });
+});
+
+// ============================================================================
+// Scenario 23: rate-limit cooldown — no spawn fired, hint appended
+// ============================================================================
+
+describe('Scenario 23: rate-limit cooldown — no spawn, hint appended', () => {
+  it('does NOT spawn refresh when rateLimitedUntilMs is in the future', async () => {
+    vi.stubEnv('NO_COLOR', '1');
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage({}, {
+      lastUsageRefreshAt: NOW - 5 * 60 * 1000, // stale — would normally trigger spawn
+      rateLimitedUntilMs: NOW + 4 * 60 * 1000, // 4 min of cooldown remaining
+    });
+
+    const { spawnCalls } = await runWithCache(
+      cache,
+      loadFixture('stdin-enterprise.json'),
+      { now: () => NOW },
+    );
+
+    expect(spawnCalls).toHaveLength(0);
+  });
+
+  it('appends rate-limited hint with minutes remaining', async () => {
+    vi.stubEnv('NO_COLOR', '1');
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage({}, {
+      lastUsageRefreshAt: NOW - 30 * 1000,
+      rateLimitedUntilMs: NOW + 4 * 60 * 1000, // 4 min remaining
+    });
+
+    const { output } = await runWithCache(
+      cache,
+      loadFixture('stdin-enterprise.json'),
+      { now: () => NOW },
+    );
+
+    expect(output).toContain(RATE_LIMITED_HINT_PREFIX.trim());
+    expect(output).toMatch(/retry in 4m/);
+  });
+
+  it('uses seconds for sub-minute cooldown', async () => {
+    vi.stubEnv('NO_COLOR', '1');
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage({}, {
+      lastUsageRefreshAt: NOW - 30 * 1000,
+      rateLimitedUntilMs: NOW + 30 * 1000, // 30s remaining
+    });
+
+    const { output } = await runWithCache(
+      cache,
+      loadFixture('stdin-enterprise.json'),
+      { now: () => NOW },
+    );
+
+    expect(output).toMatch(/retry in 30s/);
+  });
+
+  it('does NOT show hint once cooldown has elapsed', async () => {
+    vi.stubEnv('NO_COLOR', '1');
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage({}, {
+      lastUsageRefreshAt: NOW - 30 * 1000,
+      rateLimitedUntilMs: NOW - 1, // just expired
+    });
+
+    const { output, spawnCalls } = await runWithCache(
+      cache,
+      loadFixture('stdin-enterprise.json'),
+      { now: () => NOW },
+    );
+
+    expect(output).not.toContain(RATE_LIMITED_HINT_PREFIX.trim());
+    // Cache is recent (30s old), so still no spawn — that's fine.
+    expect(spawnCalls).toHaveLength(0);
+  });
+
+  it('cooldown hint takes precedence over no-hint when no auth issue', async () => {
+    // Sanity: hint must be present alongside the figures.
+    vi.stubEnv('NO_COLOR', '1');
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage({}, {
+      lastUsageRefreshAt: NOW - 30 * 1000,
+      rateLimitedUntilMs: NOW + 2 * 60 * 1000,
+    });
+
+    const { output } = await runWithCache(
+      cache,
+      loadFixture('stdin-enterprise.json'),
+      { now: () => NOW },
+    );
+
+    expect(output).toContain('$780.00 / $1000.00 (78%)');
+    expect(output).toContain('retry in 2m');
   });
 });

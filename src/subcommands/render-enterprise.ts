@@ -32,6 +32,18 @@ export const AUTH_FATAL_HINT = ' re-run init to re-auth';
 /** Hint appended when authState is 'cloudflare-blocked'. */
 export const CLOUDFLARE_HINT = ' refresh blocked (cloudflare); see README#cloudflare';
 
+/** Prefix for the rate-limit cooldown hint; followed by `Xm` / `Xs` until reset. */
+export const RATE_LIMITED_HINT_PREFIX = ' rate-limited; retry in ';
+
+function formatRateLimitedHint(msUntilReset: number): string {
+  const secondsRemaining = Math.max(1, Math.ceil(msUntilReset / 1000));
+  if (secondsRemaining < 60) {
+    return `${RATE_LIMITED_HINT_PREFIX}${secondsRemaining}s`;
+  }
+  const minutesRemaining = Math.ceil(secondsRemaining / 60);
+  return `${RATE_LIMITED_HINT_PREFIX}${minutesRemaining}m`;
+}
+
 // ---------------------------------------------------------------------------
 // Dependency injection
 // ---------------------------------------------------------------------------
@@ -260,6 +272,11 @@ function renderLine(
     } else if (cache.authState === 'cloudflare-blocked') {
       // Render normally; just append hint.
       authHint = CLOUDFLARE_HINT;
+    } else if (cache.rateLimitedUntilMs > nowMs) {
+      // Currently rate-limited (cooldown not yet elapsed). Render figures
+      // normally — they're still the most recent we know — but tell the user
+      // when retries will resume.
+      authHint = formatRateLimitedHint(cache.rateLimitedUntilMs - nowMs);
     }
   }
 
@@ -334,7 +351,10 @@ export async function runRenderEnterprise(
   // Don't fire if another refresh is already in flight.
   const inFlight = cache !== null && isRefreshInFlight(cache, nowMs);
 
-  const shouldFire = (cacheIsMissing || isStale) && !authFatal && !inFlight;
+  // Don't fire while in rate-limit cooldown — would just earn another 429.
+  const inCooldown = cache !== null && cache.rateLimitedUntilMs > nowMs;
+
+  const shouldFire = (cacheIsMissing || isStale) && !authFatal && !inFlight && !inCooldown;
 
   if (shouldFire) {
     const minimalEnv = buildMinimalEnv();

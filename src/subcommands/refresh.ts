@@ -7,6 +7,18 @@ import {
   type Cache,
 } from '../cache/store';
 import { refresh, fetchUsage } from '../oauth/client';
+import type { RateLimitDiagnostics } from '../oauth/types';
+
+function formatRateLimitMessage(prefix: string, diag: RateLimitDiagnostics): string {
+  const headerNote = diag.retryAfterPresent
+    ? 'header present'
+    : 'header absent, default applied';
+  const shouldRetryNote =
+    diag.xShouldRetry === null
+      ? ''
+      : ` x-should-retry: ${diag.xShouldRetry ? 'true' : 'false'}.`;
+  return `${prefix} Retry-After: ${diag.retryAfterSeconds}s (${headerNote}).${shouldRetryNote}`;
+}
 
 export interface RefreshDeps {
   cachePath?: string;
@@ -31,6 +43,13 @@ export async function runRefresh(
 
     // Step 2: If authState is 'fatal' → exit 0 silently.
     if (initialCache.authState === 'fatal') {
+      return 0;
+    }
+
+    // Step 2b: If still in rate-limit cooldown → exit silently. The renderer
+    // also gates on this, but a stale install or a different code path could
+    // still fire refresh, so guard here too.
+    if (initialCache.rateLimitedUntilMs > now()) {
       return 0;
     }
 
@@ -100,10 +119,11 @@ export async function runRefresh(
 
         case 'rate-limited': {
           const msg = sanitizeErrorMessage(
-            `Token refresh rate-limited. Retry-After: ${result.retryAfterSeconds}s.`,
+            formatRateLimitMessage('Token refresh rate-limited.', result),
             cache.credentials,
           );
           cache.lastErrorMessage = msg;
+          cache.rateLimitedUntilMs = now() + result.retryAfterSeconds * 1000;
           await writeCache(cache, cachePath);
           return 0;
         }
@@ -155,10 +175,11 @@ export async function runRefresh(
 
       case 'rate-limited': {
         const msg = sanitizeErrorMessage(
-          `Usage fetch rate-limited. Retry-After: ${usageResult.retryAfterSeconds}s.`,
+          formatRateLimitMessage('Usage fetch rate-limited.', usageResult),
           cache.credentials,
         );
         cache.lastErrorMessage = msg;
+        cache.rateLimitedUntilMs = now() + usageResult.retryAfterSeconds * 1000;
         await writeCache(cache, cachePath);
         return 0;
       }
@@ -175,6 +196,7 @@ export async function runRefresh(
         cache.lastUsageRefreshAt = now();
         cache.lastErrorMessage = null;
         cache.authState = 'ok';
+        cache.rateLimitedUntilMs = 0;
         await writeCache(cache, cachePath);
         return 0;
       }

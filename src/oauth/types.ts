@@ -25,16 +25,22 @@ export interface UsageResponse {
   extra_usage?: ExtraUsage;
 }
 
+export interface RateLimitDiagnostics {
+  retryAfterSeconds: number;
+  retryAfterPresent: boolean;
+  xShouldRetry: boolean | null;
+}
+
 export type RefreshResult =
   | { kind: 'success'; data: OAuthCredentials }
   | { kind: 'auth-fatal'; reason: string }
   | { kind: 'cloudflare-blocked'; status: number }
-  | { kind: 'rate-limited'; retryAfterSeconds: number }
+  | ({ kind: 'rate-limited' } & RateLimitDiagnostics)
   | { kind: 'transient'; status: number; message: string };
 
 export type FetchUsageResult =
   | { kind: 'success'; data: UsageResponse }
   | { kind: 'auth-fatal'; reason: string }
   | { kind: 'cloudflare-blocked'; status: number }
-  | { kind: 'rate-limited'; retryAfterSeconds: number }
+  | ({ kind: 'rate-limited' } & RateLimitDiagnostics)
   | { kind: 'transient'; status: number; message: string };
