@@ -26,7 +26,7 @@ const MOCK_USAGE: UsageResponse = {
 function makeCache(overrides: Partial<Cache> = {}): Cache {
   const now = Date.now();
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     authState: 'ok',
     credentials: {
       accessToken: 'at-fresh-token',
@@ -37,6 +37,7 @@ function makeCache(overrides: Partial<Cache> = {}): Cache {
     lastUsageRefreshAt: 0,
     lastRefreshStartedAt: 0,
     lastErrorMessage: null,
+    rateLimitedUntilMs: 0,
     ...overrides,
   };
 }
@@ -546,25 +547,25 @@ describe('runRefresh', () => {
   // -------------------------------------------------------------------------
   // Scenario 12: Rate-limited fetchUsage
   // -------------------------------------------------------------------------
-  it('12. rate-limited fetchUsage: lastErrorMessage mentions retry-after, authState stays ok', async () => {
-    const now = Date.now();
+  it('12. rate-limited fetchUsage: persists rateLimitedUntilMs, header-present note, authState stays ok', async () => {
+    const frozenNow = Date.now();
     const cache = makeCache({
       credentials: {
         accessToken: 'at-rl',
         refreshToken: 'rt-rl',
-        expiresAt: now + 60 * 60 * 1000, // fresh
+        expiresAt: frozenNow + 60 * 60 * 1000, // fresh
       },
     });
     await writeTestCache(tmpDir, cache);
 
     const mockFetch = buildFetchMock([
-      // fetchUsage returns 429
-      { status: 429, headers: { 'Retry-After': '60' } },
+      { status: 429, headers: { 'Retry-After': '120', 'x-should-retry': 'false' } },
     ]);
 
     const exitCode = await runRefresh([], {
       cachePath: cachePath(tmpDir),
       fetchImpl: mockFetch,
+      now: () => frozenNow,
     });
 
     expect(exitCode).toBe(0);
@@ -572,6 +573,92 @@ describe('runRefresh', () => {
     expect(result).not.toBeNull();
     expect(result!.authState).toBe('ok');
     expect(result!.lastErrorMessage).toMatch(/retry-after/i);
+    expect(result!.lastErrorMessage).toContain('header present');
+    expect(result!.lastErrorMessage).toContain('x-should-retry: false');
+    expect(result!.rateLimitedUntilMs).toBe(frozenNow + 120_000);
+  });
+
+  it('12b. rate-limited with header absent: lastErrorMessage notes default applied', async () => {
+    const frozenNow = Date.now();
+    const cache = makeCache({
+      credentials: {
+        accessToken: 'at-rl-no-header',
+        refreshToken: 'rt-rl-no-header',
+        expiresAt: frozenNow + 60 * 60 * 1000,
+      },
+    });
+    await writeTestCache(tmpDir, cache);
+
+    const mockFetch = buildFetchMock([
+      { status: 429 }, // no Retry-After
+    ]);
+
+    await runRefresh([], {
+      cachePath: cachePath(tmpDir),
+      fetchImpl: mockFetch,
+      now: () => frozenNow,
+    });
+
+    const result = readCache(cachePath(tmpDir));
+    expect(result!.lastErrorMessage).toContain('header absent, default applied');
+    expect(result!.rateLimitedUntilMs).toBe(frozenNow + 60_000);
+  });
+
+  it('12c. successful fetchUsage clears rateLimitedUntilMs', async () => {
+    const frozenNow = Date.now();
+    const cache = makeCache({
+      credentials: {
+        accessToken: 'at-recover',
+        refreshToken: 'rt-recover',
+        expiresAt: frozenNow + 60 * 60 * 1000,
+      },
+      rateLimitedUntilMs: frozenNow - 1000, // expired cooldown — refresh proceeds
+    });
+    await writeTestCache(tmpDir, cache);
+
+    const mockFetch = buildFetchMock([
+      { status: 200, body: MOCK_USAGE },
+    ]);
+
+    await runRefresh([], {
+      cachePath: cachePath(tmpDir),
+      fetchImpl: mockFetch,
+      now: () => frozenNow,
+    });
+
+    const result = readCache(cachePath(tmpDir));
+    expect(result!.rateLimitedUntilMs).toBe(0);
+    expect(result!.usage).toEqual(MOCK_USAGE);
+  });
+
+  it('12d. cooldown active: runRefresh exits without making any fetch call', async () => {
+    const frozenNow = Date.now();
+    const cache = makeCache({
+      credentials: {
+        accessToken: 'at-still-cooling',
+        refreshToken: 'rt-still-cooling',
+        expiresAt: frozenNow + 60 * 60 * 1000,
+      },
+      rateLimitedUntilMs: frozenNow + 60_000, // 60s of cooldown remaining
+    });
+    await writeTestCache(tmpDir, cache);
+
+    let fetchCalled = false;
+    const mockFetch: typeof fetch = async () => {
+      fetchCalled = true;
+      return new Response('', { status: 200 });
+    };
+
+    await runRefresh([], {
+      cachePath: cachePath(tmpDir),
+      fetchImpl: mockFetch,
+      now: () => frozenNow,
+    });
+
+    expect(fetchCalled).toBe(false);
+    // Cache untouched.
+    const result = readCache(cachePath(tmpDir));
+    expect(result!.rateLimitedUntilMs).toBe(frozenNow + 60_000);
   });
 
   // -------------------------------------------------------------------------

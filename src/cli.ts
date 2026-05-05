@@ -3,6 +3,7 @@ import { runUninstall } from './subcommands/uninstall';
 import { runRefresh } from './subcommands/refresh';
 import { runRenderPromax } from './subcommands/render-promax';
 import { runRenderEnterprise } from './subcommands/render-enterprise';
+import { runDoctor } from './subcommands/doctor';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const PKG_VERSION: string = ((): string => {
@@ -24,6 +25,7 @@ Usage:
   cc-statusline render-promax       (invoked by Claude Code; reads stdin)
   cc-statusline render-enterprise   (invoked by Claude Code; reads stdin)
   cc-statusline refresh             (background token + usage refresh)
+  cc-statusline doctor              (print cache diagnostics; no credentials)
   cc-statusline --version           (print the installed version)
 
 Pro and Max use the same renderer; Enterprise uses cache-backed OAuth usage.
@@ -54,6 +56,8 @@ async function main(argv: string[]): Promise<number> {
       return runRenderPromax();
     case 'render-enterprise':
       return runRenderEnterprise();
+    case 'doctor':
+      return runDoctor(argv.slice(3));
     case undefined:
     case '-h':
     case '--help':

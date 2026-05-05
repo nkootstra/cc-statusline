@@ -94,7 +94,7 @@ describe('refresh', () => {
     expect(result.status).toBe(403);
   });
 
-  it('429 with Retry-After header -> rate-limited with that value', async () => {
+  it('429 with Retry-After header -> rate-limited with that value, retryAfterPresent: true', async () => {
     const mockFetch = vi.fn().mockResolvedValue(
       makeResponse(429, '', { 'Retry-After': '60' }),
     );
@@ -102,14 +102,38 @@ describe('refresh', () => {
     expect(result.kind).toBe('rate-limited');
     if (result.kind !== 'rate-limited') return;
     expect(result.retryAfterSeconds).toBe(60);
+    expect(result.retryAfterPresent).toBe(true);
+    expect(result.xShouldRetry).toBeNull();
   });
 
-  it('429 without Retry-After header -> defaults to 60s', async () => {
+  it('429 without Retry-After header -> defaults to 60s, retryAfterPresent: false', async () => {
     const mockFetch = vi.fn().mockResolvedValue(makeResponse(429, ''));
     const result = await refresh('token', mockFetch);
     expect(result.kind).toBe('rate-limited');
     if (result.kind !== 'rate-limited') return;
     expect(result.retryAfterSeconds).toBe(60);
+    expect(result.retryAfterPresent).toBe(false);
+  });
+
+  it('429 with garbage Retry-After -> defaults to 60s, retryAfterPresent: false', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(
+      makeResponse(429, '', { 'Retry-After': 'not-a-number' }),
+    );
+    const result = await refresh('token', mockFetch);
+    expect(result.kind).toBe('rate-limited');
+    if (result.kind !== 'rate-limited') return;
+    expect(result.retryAfterSeconds).toBe(60);
+    expect(result.retryAfterPresent).toBe(false);
+  });
+
+  it('429 with x-should-retry: false -> xShouldRetry: false', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(
+      makeResponse(429, '', { 'Retry-After': '30', 'x-should-retry': 'false' }),
+    );
+    const result = await refresh('token', mockFetch);
+    expect(result.kind).toBe('rate-limited');
+    if (result.kind !== 'rate-limited') return;
+    expect(result.xShouldRetry).toBe(false);
   });
 
   it('500 -> transient with status 500', async () => {
@@ -212,7 +236,7 @@ describe('fetchUsage', () => {
     expect(result.status).toBe(403);
   });
 
-  it('429 with Retry-After header -> rate-limited', async () => {
+  it('429 with Retry-After header -> rate-limited with diagnostics', async () => {
     const mockFetch = vi.fn().mockResolvedValue(
       makeResponse(429, '', { 'Retry-After': '120' }),
     );
@@ -220,14 +244,27 @@ describe('fetchUsage', () => {
     expect(result.kind).toBe('rate-limited');
     if (result.kind !== 'rate-limited') return;
     expect(result.retryAfterSeconds).toBe(120);
+    expect(result.retryAfterPresent).toBe(true);
+    expect(result.xShouldRetry).toBeNull();
   });
 
-  it('429 without Retry-After -> defaults to 60s', async () => {
+  it('429 without Retry-After -> defaults to 60s, retryAfterPresent: false', async () => {
     const mockFetch = vi.fn().mockResolvedValue(makeResponse(429, ''));
     const result = await fetchUsage('token', mockFetch);
     expect(result.kind).toBe('rate-limited');
     if (result.kind !== 'rate-limited') return;
     expect(result.retryAfterSeconds).toBe(60);
+    expect(result.retryAfterPresent).toBe(false);
+  });
+
+  it('429 with x-should-retry: false -> xShouldRetry: false', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(
+      makeResponse(429, '', { 'Retry-After': '120', 'x-should-retry': 'false' }),
+    );
+    const result = await fetchUsage('token', mockFetch);
+    expect(result.kind).toBe('rate-limited');
+    if (result.kind !== 'rate-limited') return;
+    expect(result.xShouldRetry).toBe(false);
   });
 
   it('500 -> transient with status 500', async () => {

@@ -14,7 +14,7 @@ import type { OAuthCredentials } from '../src/oauth/types';
 
 function makeMinimalCache(overrides: Partial<Cache> = {}): Cache {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     authState: 'ok',
     credentials: {
       accessToken: 'sk-ant-access',
@@ -25,6 +25,7 @@ function makeMinimalCache(overrides: Partial<Cache> = {}): Cache {
     lastUsageRefreshAt: 0,
     lastRefreshStartedAt: 0,
     lastErrorMessage: null,
+    rateLimitedUntilMs: 0,
     ...overrides,
   };
 }
@@ -77,9 +78,9 @@ describe('readCache', () => {
     }
   });
 
-  it('returns null when schemaVersion is not 1', () => {
+  it('returns null when schemaVersion is unrecognized', () => {
     const tmpFile = path.join(os.tmpdir(), `cc-statusline-test-${Date.now()}.json`);
-    fs.writeFileSync(tmpFile, JSON.stringify({ schemaVersion: 0, authState: 'ok' }), 'utf8');
+    fs.writeFileSync(tmpFile, JSON.stringify({ schemaVersion: 99, authState: 'ok' }), 'utf8');
     try {
       const result = readCache(tmpFile);
       expect(result).toBeNull();
@@ -88,16 +89,46 @@ describe('readCache', () => {
     }
   });
 
-  it('returns a typed Cache object for valid cache JSON', () => {
+  it('returns a typed Cache object for valid v2 JSON', () => {
     const cache = makeMinimalCache();
     const tmpFile = path.join(os.tmpdir(), `cc-statusline-test-${Date.now()}.json`);
     fs.writeFileSync(tmpFile, JSON.stringify(cache, null, 2) + '\n', 'utf8');
     try {
       const result = readCache(tmpFile);
       expect(result).not.toBeNull();
-      expect(result?.schemaVersion).toBe(1);
+      expect(result?.schemaVersion).toBe(2);
       expect(result?.authState).toBe('ok');
       expect(result?.credentials.accessToken).toBe('sk-ant-access');
+      expect(result?.rateLimitedUntilMs).toBe(0);
+    } finally {
+      fs.unlinkSync(tmpFile);
+    }
+  });
+
+  it('migrates a v1 cache to v2 with rateLimitedUntilMs: 0', () => {
+    const v1Cache = {
+      schemaVersion: 1,
+      authState: 'ok',
+      credentials: {
+        accessToken: 'v1-access',
+        refreshToken: 'v1-refresh',
+        expiresAt: Date.now() + 3_600_000,
+      },
+      usage: null,
+      lastUsageRefreshAt: 12345,
+      lastRefreshStartedAt: 0,
+      lastErrorMessage: null,
+    };
+    const tmpFile = path.join(os.tmpdir(), `cc-statusline-v1-${Date.now()}.json`);
+    fs.writeFileSync(tmpFile, JSON.stringify(v1Cache, null, 2) + '\n', 'utf8');
+    try {
+      const result = readCache(tmpFile);
+      expect(result).not.toBeNull();
+      expect(result?.schemaVersion).toBe(2);
+      expect(result?.rateLimitedUntilMs).toBe(0);
+      // Other fields preserved
+      expect(result?.credentials.accessToken).toBe('v1-access');
+      expect(result?.lastUsageRefreshAt).toBe(12345);
     } finally {
       fs.unlinkSync(tmpFile);
     }
@@ -116,7 +147,7 @@ describe('writeCache', () => {
 
       const content = fs.readFileSync(filePath, 'utf8');
       const parsed = JSON.parse(content);
-      expect(parsed.schemaVersion).toBe(1);
+      expect(parsed.schemaVersion).toBe(2);
       expect(content.endsWith('\n')).toBe(true);
     } finally {
       fs.rmSync(tmpBase, { recursive: true, force: true });
