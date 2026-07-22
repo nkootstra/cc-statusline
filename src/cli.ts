@@ -25,7 +25,7 @@ Usage:
   cc-statusline render-promax       (invoked by Claude Code; reads stdin)
   cc-statusline render-enterprise   (invoked by Claude Code; reads stdin)
   cc-statusline refresh             (background token + usage refresh)
-  cc-statusline doctor              (print cache diagnostics; no credentials)
+  cc-statusline doctor [--logs]     (print cache diagnostics; no credentials)
   cc-statusline --version           (print the installed version)
 
 Pro and Max use the same renderer; Enterprise uses cache-backed OAuth usage.
@@ -71,9 +71,9 @@ async function main(argv: string[]): Promise<number> {
 
 main(process.argv)
   .then((code) => {
-    process.exit(code);
+    process.exitCode = code;
   })
   .catch((err) => {
     process.stderr.write(`cc-statusline crashed: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
+    process.exitCode = 1;
   });

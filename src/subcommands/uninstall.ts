@@ -4,6 +4,7 @@
  * Removes:
  *   - <installDir>/cc-statusline.js
  *   - <installDir>/cache.json
+ *   - <installDir>/debug.log and its rotated backup
  *   - <installDir>/ (only if empty after above removals)
  *
  * Clears `statusLine` from ~/.claude/settings.json.
@@ -88,10 +89,14 @@ export async function runUninstall(_args: string[], deps: UninstallDeps = {}): P
   const cachePath = path.join(installDir, 'cache.json');
   tryUnlink(cachePath);
 
-  // 3. Remove installDir if empty (leave if user added other files)
+  // 3. Remove diagnostic logs
+  tryUnlink(path.join(installDir, 'debug.log'));
+  tryUnlink(path.join(installDir, 'debug.log.1'));
+
+  // 4. Remove installDir if empty (leave if user added other files)
   tryRmdir(installDir);
 
-  // 4. Clear statusLine from settings.json (if settings file exists)
+  // 5. Clear statusLine from settings.json (if settings file exists)
   const settings = readSettings(settingsFilePath);
   // readSettings returns {} if file does not exist — check if statusLine was there
   if ('statusLine' in settings) {

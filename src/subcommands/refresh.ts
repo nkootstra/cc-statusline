@@ -7,7 +7,16 @@ import {
   type Cache,
 } from '../cache/store';
 import { refresh, fetchUsage } from '../oauth/client';
-import type { RateLimitDiagnostics } from '../oauth/types';
+import {
+  createDiagnosticLogger,
+  defaultDiagnosticLogPath,
+  type DiagnosticLogger,
+} from '../diagnostics/logger';
+import type {
+  FetchUsageResult,
+  RateLimitDiagnostics,
+  RefreshResult,
+} from '../oauth/types';
 
 function formatRateLimitMessage(prefix: string, diag: RateLimitDiagnostics): string {
   const headerNote = diag.retryAfterPresent
@@ -22,8 +31,51 @@ function formatRateLimitMessage(prefix: string, diag: RateLimitDiagnostics): str
 
 export interface RefreshDeps {
   cachePath?: string;
+  logPath?: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
+}
+
+type RequestEndpoint = 'token' | 'usage';
+type RequestResult = RefreshResult | FetchUsageResult;
+
+function statusForResult(endpoint: RequestEndpoint, result: RequestResult): number | undefined {
+  if (result.kind === 'success') return 200;
+  if (result.kind === 'rate-limited') return 429;
+  if (result.kind === 'auth-fatal') {
+    if (result.reason === '401') return 401;
+    if (endpoint === 'token' && result.reason === 'invalid_grant') return 400;
+    return undefined;
+  }
+  return result.status;
+}
+
+async function logRequestResult(
+  logger: DiagnosticLogger,
+  endpoint: RequestEndpoint,
+  result: RequestResult,
+  durationMs: number,
+  credentials: Cache['credentials'],
+): Promise<void> {
+  const details: Record<string, unknown> = {
+    event: 'http.result',
+    endpoint,
+    result: result.kind,
+    status: statusForResult(endpoint, result),
+    durationMs,
+  };
+
+  if (result.kind === 'rate-limited') {
+    details['retryAfterSeconds'] = result.retryAfterSeconds;
+    details['retryAfterPresent'] = result.retryAfterPresent;
+    details['xShouldRetry'] = result.xShouldRetry;
+  } else if (result.kind === 'transient') {
+    details['error'] = sanitizeErrorMessage(result.message, credentials);
+  } else if (result.kind === 'auth-fatal') {
+    details['reason'] = sanitizeErrorMessage(result.reason, credentials);
+  }
+
+  await logger.log(details);
 }
 
 export async function runRefresh(
@@ -31,18 +83,22 @@ export async function runRefresh(
   deps: RefreshDeps = {},
 ): Promise<number> {
   const cachePath = deps.cachePath ?? defaultCachePath();
+  const logPath = deps.logPath ?? defaultDiagnosticLogPath(cachePath);
   const fetchImpl = deps.fetchImpl;
   const now = deps.now ?? (() => Date.now());
+  const logger = createDiagnosticLogger(logPath, { now });
 
   try {
     // Step 1: Read cache. If null → exit 0 silently.
     const initialCache = readCache(cachePath);
     if (initialCache === null) {
+      await logger.log({ event: 'refresh.skipped', reason: 'cache-missing' });
       return 0;
     }
 
     // Step 2: If authState is 'fatal' → exit 0 silently.
     if (initialCache.authState === 'fatal') {
+      await logger.log({ event: 'refresh.skipped', reason: 'auth-fatal' });
       return 0;
     }
 
@@ -50,6 +106,11 @@ export async function runRefresh(
     // also gates on this, but a stale install or a different code path could
     // still fire refresh, so guard here too.
     if (initialCache.rateLimitedUntilMs > now()) {
+      await logger.log({
+        event: 'refresh.skipped',
+        reason: 'rate-limit-cooldown',
+        cooldownRemainingMs: initialCache.rateLimitedUntilMs - now(),
+      });
       return 0;
     }
 
@@ -61,6 +122,7 @@ export async function runRefresh(
     }
 
     if (isRefreshInFlight(casCache, now())) {
+      await logger.log({ event: 'refresh.skipped', reason: 'in-flight' });
       return 0;
     }
 
@@ -76,11 +138,13 @@ export async function runRefresh(
       verifyCache.lastRefreshStartedAt !== startedAt
     ) {
       // Another process overwrote our write; exit silently.
+      await logger.log({ event: 'refresh.skipped', reason: 'cas-lost' });
       return 0;
     }
 
     // Work with a mutable copy of the verified cache.
     let cache: Cache = verifyCache;
+    await logger.log({ event: 'refresh.started' });
 
     // Step 4: Token refresh decision.
     const FIVE_MINUTES_MS = 5 * 60 * 1000;
@@ -88,10 +152,24 @@ export async function runRefresh(
 
     if (cache.credentials.expiresAt - now() < FIVE_MINUTES_MS) {
       // Token is near expiry or already expired — refresh it.
+      await logger.log({
+        event: 'token.refresh.decision',
+        action: 'refresh',
+        expiresInMs: cache.credentials.expiresAt - now(),
+      });
       const refreshArgs: Parameters<typeof refresh> = fetchImpl
         ? [cache.credentials.refreshToken, fetchImpl]
         : [cache.credentials.refreshToken];
+      await logger.log({ event: 'http.request', endpoint: 'token' });
+      const requestStartedAt = performance.now();
       const result = await refresh(...refreshArgs);
+      await logRequestResult(
+        logger,
+        'token',
+        result,
+        Math.round(performance.now() - requestStartedAt),
+        cache.credentials,
+      );
 
       switch (result.kind) {
         case 'auth-fatal': {
@@ -102,6 +180,7 @@ export async function runRefresh(
           cache.authState = 'fatal';
           cache.lastErrorMessage = msg;
           await writeCache(cache, cachePath);
+          await logger.log({ event: 'refresh.completed', outcome: 'auth-fatal' });
           return 0;
         }
 
@@ -114,6 +193,7 @@ export async function runRefresh(
           cache.authState = 'cloudflare-blocked';
           cache.lastErrorMessage = msg;
           await writeCache(cache, cachePath);
+          await logger.log({ event: 'refresh.completed', outcome: 'cloudflare-blocked' });
           return 0;
         }
 
@@ -125,6 +205,11 @@ export async function runRefresh(
           cache.lastErrorMessage = msg;
           cache.rateLimitedUntilMs = now() + result.retryAfterSeconds * 1000;
           await writeCache(cache, cachePath);
+          await logger.log({
+            event: 'refresh.completed',
+            outcome: 'rate-limited',
+            cooldownUntilMs: cache.rateLimitedUntilMs,
+          });
           return 0;
         }
 
@@ -132,6 +217,7 @@ export async function runRefresh(
           const msg = sanitizeErrorMessage(result.message, cache.credentials);
           cache.lastErrorMessage = msg;
           await writeCache(cache, cachePath);
+          await logger.log({ event: 'refresh.completed', outcome: 'transient' });
           return 0;
         }
 
@@ -141,13 +227,24 @@ export async function runRefresh(
           break;
         }
       }
+    } else {
+      await logger.log({ event: 'token.refresh.decision', action: 'skip', reason: 'token-fresh' });
     }
 
     // Step 5: Fetch usage.
     const usageArgs: Parameters<typeof fetchUsage> = fetchImpl
       ? [cache.credentials.accessToken, fetchImpl]
       : [cache.credentials.accessToken];
+    await logger.log({ event: 'http.request', endpoint: 'usage' });
+    const usageRequestStartedAt = performance.now();
     const usageResult = await fetchUsage(...usageArgs);
+    await logRequestResult(
+      logger,
+      'usage',
+      usageResult,
+      Math.round(performance.now() - usageRequestStartedAt),
+      cache.credentials,
+    );
 
     switch (usageResult.kind) {
       case 'auth-fatal': {
@@ -158,6 +255,7 @@ export async function runRefresh(
         cache.authState = 'fatal';
         cache.lastErrorMessage = msg;
         await writeCache(cache, cachePath);
+        await logger.log({ event: 'refresh.completed', outcome: 'auth-fatal' });
         return 0;
       }
 
@@ -170,6 +268,7 @@ export async function runRefresh(
         cache.authState = 'cloudflare-blocked';
         cache.lastErrorMessage = msg;
         await writeCache(cache, cachePath);
+        await logger.log({ event: 'refresh.completed', outcome: 'cloudflare-blocked' });
         return 0;
       }
 
@@ -181,6 +280,11 @@ export async function runRefresh(
         cache.lastErrorMessage = msg;
         cache.rateLimitedUntilMs = now() + usageResult.retryAfterSeconds * 1000;
         await writeCache(cache, cachePath);
+        await logger.log({
+          event: 'refresh.completed',
+          outcome: 'rate-limited',
+          cooldownUntilMs: cache.rateLimitedUntilMs,
+        });
         return 0;
       }
 
@@ -188,6 +292,7 @@ export async function runRefresh(
         const msg = sanitizeErrorMessage(usageResult.message, cache.credentials);
         cache.lastErrorMessage = msg;
         await writeCache(cache, cachePath);
+        await logger.log({ event: 'refresh.completed', outcome: 'transient' });
         return 0;
       }
 
@@ -198,6 +303,7 @@ export async function runRefresh(
         cache.authState = 'ok';
         cache.rateLimitedUntilMs = 0;
         await writeCache(cache, cachePath);
+        await logger.log({ event: 'refresh.completed', outcome: 'success' });
         return 0;
       }
     }
@@ -205,6 +311,7 @@ export async function runRefresh(
     // Catastrophic uncaught error — swallow and exit 0 to be spawn-friendly.
     // This path is a last resort; the code above should handle all known cases.
     void err;
+    await logger.log({ event: 'refresh.crashed' });
     return 0;
   }
 

@@ -63,6 +63,10 @@ function getCachePath(dir: string): string {
   return path.join(getInstallDir(dir), 'cache.json');
 }
 
+function getDiagnosticLogPath(dir: string): string {
+  return path.join(getInstallDir(dir), 'debug.log');
+}
+
 function writeRenderer(dir: string): void {
   const p = getRendererPath(dir);
   fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -88,6 +92,11 @@ async function writeTestCache(dir: string): Promise<void> {
     rateLimitedUntilMs: 0,
   };
   await writeCache(cache, getCachePath(dir));
+}
+
+function writeDiagnosticLogs(dir: string): void {
+  fs.writeFileSync(getDiagnosticLogPath(dir), '{"event":"test"}\n', { mode: 0o600 });
+  fs.writeFileSync(`${getDiagnosticLogPath(dir)}.1`, '{"event":"old"}\n', { mode: 0o600 });
 }
 
 const COMMAND = '/home/user/.claude/cc-statusline/cc-statusline.js render-promax';
@@ -119,6 +128,7 @@ describe('T1: AE6 clean install state', () => {
 
     writeRenderer(tmpDir);
     await writeTestCache(tmpDir);
+    writeDiagnosticLogs(tmpDir);
 
     // Write settings with statusLine and sibling keys
     writeJson(settingsPath(tmpDir), {
@@ -137,6 +147,10 @@ describe('T1: AE6 clean install state', () => {
 
     // Cache removed
     expect(fs.existsSync(getCachePath(tmpDir))).toBe(false);
+
+    // Diagnostic logs removed
+    expect(fs.existsSync(getDiagnosticLogPath(tmpDir))).toBe(false);
+    expect(fs.existsSync(`${getDiagnosticLogPath(tmpDir)}.1`)).toBe(false);
 
     // Install dir removed (was empty after above)
     expect(fs.existsSync(getInstallDir(tmpDir))).toBe(false);

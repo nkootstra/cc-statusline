@@ -19,6 +19,11 @@ import {
 } from '../cache/store';
 import type { Cache } from '../cache/store';
 import type { ExtraUsage, UsageBucket, UsageResponse } from '../oauth/types';
+import {
+  createDiagnosticLogger,
+  defaultDiagnosticLogPath,
+  type DiagnosticLogger,
+} from '../diagnostics/logger';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,6 +62,7 @@ export type SpawnFn = (command: string, args: string[], opts: SpawnOptions) => v
 export interface RenderEnterpriseDeps {
   cachePath?: string;
   bundlePath?: string;
+  logger?: DiagnosticLogger;
   /** Override the spawn call for testing. Receives (command, args, opts). */
   spawnRefresh?: SpawnFn;
   now?: () => number;
@@ -317,6 +323,7 @@ export async function runRenderEnterprise(
   const cachePath = deps.cachePath ?? defaultCachePath();
   const bundlePath = deps.bundlePath ?? __filename;
   const now = deps.now ?? (() => Date.now());
+  const logger = deps.logger ?? createDiagnosticLogger(defaultDiagnosticLogPath(cachePath), { now });
   const spawnFn = deps.spawnRefresh ?? defaultSpawnFn();
 
   // Step 1: Read stdin.
@@ -355,6 +362,27 @@ export async function runRenderEnterprise(
   const inCooldown = cache !== null && cache.rateLimitedUntilMs > nowMs;
 
   const shouldFire = (cacheIsMissing || isStale) && !authFatal && !inFlight && !inCooldown;
+
+  if (cacheIsMissing || isStale) {
+    const reason = cacheIsMissing
+      ? 'cache-missing'
+      : authFatal
+        ? 'auth-fatal'
+        : inFlight
+          ? 'in-flight'
+          : inCooldown
+            ? 'rate-limit-cooldown'
+            : 'stale-cache';
+    void logger.log({
+      event: 'render.refresh_decision',
+      action: shouldFire ? 'spawn' : 'skip',
+      reason,
+      usageAgeMs: Number.isFinite(staleAge) ? staleAge : null,
+      cooldownRemainingMs: inCooldown && cache !== null
+        ? cache.rateLimitedUntilMs - nowMs
+        : 0,
+    });
+  }
 
   if (shouldFire) {
     const minimalEnv = buildMinimalEnv();
