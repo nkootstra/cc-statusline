@@ -30,7 +30,9 @@ describe('diagnostic logger', () => {
       reason: 'stale-cache',
     });
     expect(typeof event['pid']).toBe('number');
-    expect(fs.statSync(logPath).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(logPath).mode & 0o777).toBe(0o600);
+    }
   });
 
   it('rotates the active log when it exceeds the configured bound', async () => {
