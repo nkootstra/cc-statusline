@@ -25,9 +25,12 @@ describe('build smoke', () => {
     const pkg = JSON.parse(
       readFileSync(resolve(__dirname, '..', 'package.json'), 'utf8'),
     ) as {
-      bin: Record<string, string>;
+      bin: Record<string, string | undefined>;
     };
     const binary = pkg.bin['cc-statusline'];
+    if (binary === undefined) {
+      throw new Error('Expected package.json bin.cc-statusline to be defined.');
+    }
     expect(binary).toBe('bin/cc-statusline.js');
     expect(existsSync(resolve(__dirname, '..', binary))).toBe(true);
   });
