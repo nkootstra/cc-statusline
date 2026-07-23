@@ -579,7 +579,7 @@ describe('runRefresh', () => {
     expect(result!.lastErrorMessage).toContain('header present');
     expect(result!.lastErrorMessage).toContain('x-should-retry: false');
     expect(result!.rateLimitedUntilMs).toBe(frozenNow + 120_000);
-    expect(result!.nextRefreshAllowedAt).toBe(frozenNow + 120_000 * 4);
+    expect(result!.nextRefreshAllowedAt).toBe(frozenNow + 300_000);
     expect(result!.consecutiveRateLimitCount).toBe(1);
 
     const log = await readDiagnosticLog(path.join(tmpDir, 'debug.log'));
@@ -615,7 +615,7 @@ describe('runRefresh', () => {
     const result = readCache(cachePath(tmpDir));
     expect(result!.lastErrorMessage).toContain('header absent, default applied');
     expect(result!.rateLimitedUntilMs).toBe(frozenNow + 60_000);
-    expect(result!.nextRefreshAllowedAt).toBe(frozenNow + 120_000);
+    expect(result!.nextRefreshAllowedAt).toBe(frozenNow + 240_000);
     expect(result!.consecutiveRateLimitCount).toBe(1);
   });
 
@@ -657,7 +657,7 @@ describe('runRefresh', () => {
         expiresAt: frozenNow + 60 * 60_000, // fresh
       },
       consecutiveRateLimitCount: 1,
-      nextRefreshAllowedAt: frozenNow + 30_000,
+      nextRefreshAllowedAt: frozenNow - 1_000,
       rateLimitedUntilMs: frozenNow - 1_000,
     });
     await writeTestCache(tmpDir, cache);
@@ -675,7 +675,7 @@ describe('runRefresh', () => {
     const result = readCache(cachePath(tmpDir));
     expect(result).not.toBeNull();
     expect(result!.consecutiveRateLimitCount).toBe(2);
-    expect(result!.nextRefreshAllowedAt).toBe(frozenNow + 240_000);
+    expect(result!.nextRefreshAllowedAt).toBe(frozenNow + 300_000);
     expect(result!.nextRefreshAllowedAt).toBeGreaterThan(result!.rateLimitedUntilMs);
   });
 

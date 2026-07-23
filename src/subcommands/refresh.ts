@@ -47,7 +47,7 @@ function nextRateLimitCooldownUntil(
   consecutiveCount: number,
 ): number {
   const baseMs = retryAfterSeconds * 1000;
-  const exponent = Math.min(consecutiveCount + 1, RATE_LIMIT_BACKOFF_CAP_EXPONENT);
+  const exponent = Math.min(consecutiveCount + 2, RATE_LIMIT_BACKOFF_CAP_EXPONENT);
   const adaptiveMs = baseMs * (1 << exponent);
   const delayMs = Math.min(adaptiveMs, RATE_LIMIT_BACKOFF_MAX_MS);
   return nowMs + delayMs;

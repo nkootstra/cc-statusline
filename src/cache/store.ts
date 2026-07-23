@@ -53,6 +53,10 @@ export function readCache(cachePath?: string): Cache | null {
   const obj = parsed as Record<string, unknown>;
   const version = obj['schemaVersion'];
 
+  if (version === 3) {
+    return obj as Cache;
+  }
+
   if (version === 2) {
     return {
       ...(obj as Omit<
