@@ -1,6 +1,6 @@
 {
   "name": "@nkootstra/cc-statusline",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Usage-aware Claude Code statusline + installer for Pro/Max and Enterprise users",
   "homepage": "https://github.com/nkootstra/cc-statusline#readme",
   "bugs": {
