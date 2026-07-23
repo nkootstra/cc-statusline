@@ -13,6 +13,7 @@ import * as path from 'node:path';
 import { runUninstall, type UninstallDeps } from '../src/subcommands/uninstall';
 import { readSettings, writeSettings } from '../src/settings/mutator';
 import { writeCache, type Cache } from '../src/cache/store';
+import { createDiagnosticLogger, defaultDiagnosticLogDisabledPath } from '../src/diagnostics/logger';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -309,5 +310,30 @@ describe('T7: re-running uninstall is idempotent', () => {
     // Second run — everything is already gone
     const code2 = await runUninstall([], deps);
     expect(code2).toBe(0);
+  });
+});
+
+describe('T8: uninstall disables active diagnostics replay', () => {
+  it('keeps a diagnostics disable marker so no new debug.log can be recreated after uninstall', async () => {
+    const tmpDir = makeTmpDir();
+
+    writeRenderer(tmpDir);
+    const customFile = path.join(getInstallDir(tmpDir), 'my-custom-config.json');
+    fs.writeFileSync(customFile, '{"custom": true}\n', 'utf8');
+    writeDiagnosticLogs(tmpDir);
+
+    const deps = baseDeps(tmpDir);
+    const code = await runUninstall([], deps);
+    expect(code).toBe(0);
+
+    const diagnosticPath = getDiagnosticLogPath(tmpDir);
+    const disabledPath = defaultDiagnosticLogDisabledPath(diagnosticPath);
+    expect(fs.existsSync(disabledPath)).toBe(true);
+    expect(fs.existsSync(diagnosticPath)).toBe(false);
+    expect(fs.existsSync(`${diagnosticPath}.1`)).toBe(false);
+    expect(fs.existsSync(getInstallDir(tmpDir))).toBe(true);
+
+    await createDiagnosticLogger(diagnosticPath).log({ event: 'refresh.skipped' });
+    expect(fs.existsSync(diagnosticPath)).toBe(false);
   });
 });

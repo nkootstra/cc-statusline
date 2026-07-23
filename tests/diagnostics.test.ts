@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   createDiagnosticLogger,
+  defaultDiagnosticLogDisabledPath,
   MAX_DIAGNOSTIC_LOG_BYTES,
   readDiagnosticLog,
 } from '../src/diagnostics/logger';
@@ -59,5 +60,30 @@ describe('diagnostic logger', () => {
 
     const output = await readDiagnosticLog(logPath);
     expect(output).toBe('{"event":"old"}\n{"event":"new"}\n');
+  });
+
+  it('serializes concurrent writes so rotation does not lose events', async () => {
+    const tmpDir = makeTmpDir();
+    const logPath = path.join(tmpDir, 'debug.log');
+    fs.writeFileSync(logPath, 'x'.repeat(MAX_DIAGNOSTIC_LOG_BYTES), { mode: 0o600 });
+
+    await Promise.all([
+      createDiagnosticLogger(logPath).log({ event: 'refresh.started' }),
+      createDiagnosticLogger(logPath).log({ event: 'refresh.completed' }),
+    ]);
+
+    const output = await readDiagnosticLog(logPath);
+    expect(output).toContain('"event":"refresh.started"');
+    expect(output).toContain('"event":"refresh.completed"');
+  });
+
+  it('does not recreate logs while diagnostics are disabled', async () => {
+    const tmpDir = makeTmpDir();
+    const logPath = path.join(tmpDir, 'debug.log');
+    fs.writeFileSync(defaultDiagnosticLogDisabledPath(logPath), 'disabled\n', { mode: 0o600 });
+
+    await createDiagnosticLogger(logPath).log({ event: 'refresh.skipped' });
+
+    expect(fs.existsSync(logPath)).toBe(false);
   });
 });
