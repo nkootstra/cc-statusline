@@ -21,6 +21,17 @@ describe('build smoke', () => {
     expect(firstLine).toBe('#!/usr/bin/env node');
   });
 
+  it('exports the CLI binary from package.json', () => {
+    const pkg = JSON.parse(
+      readFileSync(resolve(__dirname, '..', 'package.json'), 'utf8'),
+    ) as {
+      bin: Record<string, string>;
+    };
+    const binary = pkg.bin['cc-statusline'];
+    expect(binary).toBe('bin/cc-statusline.js');
+    expect(existsSync(resolve(__dirname, '..', binary))).toBe(true);
+  });
+
   it('exits 0 with no args (prints help)', () => {
     const result = spawnSync(process.execPath, [BUNDLE], { encoding: 'utf8' });
     expect(result.status).toBe(0);

@@ -1,6 +1,6 @@
 {
   "name": "@nkootstra/cc-statusline",
-  "version": "0.5.0",
+  "version": "0.5.2",
   "description": "Usage-aware Claude Code statusline + installer for Pro/Max and Enterprise users",
   "homepage": "https://github.com/nkootstra/cc-statusline#readme",
   "bugs": {
@@ -20,10 +20,11 @@
   "license": "MIT",
   "type": "commonjs",
   "bin": {
-    "cc-statusline": "dist/cli.cjs"
+    "cc-statusline": "bin/cc-statusline.js"
   },
   "files": [
-    "dist/"
+    "dist/",
+    "bin/"
   ],
   "engines": {
     "node": ">=22"
