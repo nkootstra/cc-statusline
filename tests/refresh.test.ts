@@ -27,7 +27,7 @@ const MOCK_USAGE: UsageResponse = {
 function makeCache(overrides: Partial<Cache> = {}): Cache {
   const now = Date.now();
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     authState: 'ok',
     credentials: {
       accessToken: 'at-fresh-token',
@@ -39,6 +39,8 @@ function makeCache(overrides: Partial<Cache> = {}): Cache {
     lastRefreshStartedAt: 0,
     lastErrorMessage: null,
     rateLimitedUntilMs: 0,
+    nextRefreshAllowedAt: 0,
+    consecutiveRateLimitCount: 0,
     ...overrides,
   };
 }
@@ -577,6 +579,8 @@ describe('runRefresh', () => {
     expect(result!.lastErrorMessage).toContain('header present');
     expect(result!.lastErrorMessage).toContain('x-should-retry: false');
     expect(result!.rateLimitedUntilMs).toBe(frozenNow + 120_000);
+    expect(result!.nextRefreshAllowedAt).toBe(frozenNow + 120_000 * 4);
+    expect(result!.consecutiveRateLimitCount).toBe(1);
 
     const log = await readDiagnosticLog(path.join(tmpDir, 'debug.log'));
     expect(log).toContain('"event":"http.result"');
@@ -611,6 +615,8 @@ describe('runRefresh', () => {
     const result = readCache(cachePath(tmpDir));
     expect(result!.lastErrorMessage).toContain('header absent, default applied');
     expect(result!.rateLimitedUntilMs).toBe(frozenNow + 60_000);
+    expect(result!.nextRefreshAllowedAt).toBe(frozenNow + 120_000);
+    expect(result!.consecutiveRateLimitCount).toBe(1);
   });
 
   it('12c. successful fetchUsage clears rateLimitedUntilMs', async () => {
@@ -637,7 +643,71 @@ describe('runRefresh', () => {
 
     const result = readCache(cachePath(tmpDir));
     expect(result!.rateLimitedUntilMs).toBe(0);
+    expect(result!.nextRefreshAllowedAt).toBe(0);
+    expect(result!.consecutiveRateLimitCount).toBe(0);
     expect(result!.usage).toEqual(MOCK_USAGE);
+  });
+
+  it('12e. consecutive rate limits increase backoff and streak', async () => {
+    const frozenNow = Date.now();
+    const cache = makeCache({
+      credentials: {
+        accessToken: 'at-rl-consecutive',
+        refreshToken: 'rt-rl-consecutive',
+        expiresAt: frozenNow + 60 * 60_000, // fresh
+      },
+      consecutiveRateLimitCount: 1,
+      nextRefreshAllowedAt: frozenNow + 30_000,
+      rateLimitedUntilMs: frozenNow - 1_000,
+    });
+    await writeTestCache(tmpDir, cache);
+
+    const mockFetch = buildFetchMock([
+      { status: 429, headers: { 'Retry-After': '60' } },
+    ]);
+
+    await runRefresh([], {
+      cachePath: cachePath(tmpDir),
+      fetchImpl: mockFetch,
+      now: () => frozenNow,
+    });
+
+    const result = readCache(cachePath(tmpDir));
+    expect(result).not.toBeNull();
+    expect(result!.consecutiveRateLimitCount).toBe(2);
+    expect(result!.nextRefreshAllowedAt).toBe(frozenNow + 240_000);
+    expect(result!.nextRefreshAllowedAt).toBeGreaterThan(result!.rateLimitedUntilMs);
+  });
+
+  it('12f. cooldown active from nextRefreshAllowedAt also prevents refresh', async () => {
+    const frozenNow = Date.now();
+    const cache = makeCache({
+      credentials: {
+        accessToken: 'at-rl-backoff-only',
+        refreshToken: 'rt-rl-backoff-only',
+        expiresAt: frozenNow + 60 * 60_000,
+      },
+      rateLimitedUntilMs: frozenNow - 1_000,
+      nextRefreshAllowedAt: frozenNow + 45_000,
+      consecutiveRateLimitCount: 2,
+    });
+    await writeTestCache(tmpDir, cache);
+
+    let fetchCalled = false;
+    const mockFetch: typeof fetch = async () => {
+      fetchCalled = true;
+      return new Response('', { status: 200 });
+    };
+
+    await runRefresh([], {
+      cachePath: cachePath(tmpDir),
+      fetchImpl: mockFetch,
+      now: () => frozenNow,
+    });
+
+    expect(fetchCalled).toBe(false);
+    const result = readCache(cachePath(tmpDir));
+    expect(result!.nextRefreshAllowedAt).toBe(frozenNow + 45_000);
   });
 
   it('12d. cooldown active: runRefresh exits without making any fetch call', async () => {

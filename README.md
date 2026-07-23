@@ -15,7 +15,9 @@ Claude Code only runs custom statusline commands after the current workspace is 
 ## What you'll see
 
 - **Pro / Max**: model name plus colorized 5-hour and 7-day rate-limit utilization.
-- **Enterprise**: model name plus cached monthly credits used / credits limit when monthly credits are enabled. Falls back to colorized 5-hour and 7-day rate-limit utilization. The credits figure comes from a local OAuth usage cache that is refreshed in the background every 60 seconds; a ` ~` marker appears when the cached value is older than that. When Claude Code reports a non-zero current-session cost, it appears separately as `session $...`; this is Claude Code's client-side estimate and may differ from actual billing.
+- **Enterprise**: model name plus cached monthly credits used / credits limit when monthly credits are enabled. Falls back to colorized 5-hour and 7-day rate-limit utilization. The credits figure comes from a local OAuth usage cache that is refreshed in the background every 60 seconds; a ` ~` marker appears when the cached value is older than that. The stale window is configurable with `CC_STATUSLINE_ENTERPRISE_STALE_MS` and clamped to 10–300 seconds. When Claude Code reports a non-zero current-session cost, it appears separately as `session $...`; this is Claude Code's client-side estimate and may differ from actual billing.
+
+The enterprise renderer also enforces a cooldown after API `429` responses. If the server asks a retry delay, cc-statusline will wait before refreshing usage again, and this cooldown can grow across repeated 429s (bounded to five minutes) to avoid repeated rate-limit churn.
 
 Pro and Max use the same renderer. They are separate installer choices only because Claude users know their subscription by those names; Claude Code exposes the same statusline usage fields for both.
 

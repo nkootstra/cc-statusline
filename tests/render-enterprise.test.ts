@@ -54,7 +54,7 @@ const GOLDEN_STDIN = JSON.stringify({
 
 function makeCache(overrides: Partial<Cache> = {}): Cache {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     authState: 'ok',
     credentials: BASE_CREDENTIALS,
     usage: null,
@@ -62,6 +62,8 @@ function makeCache(overrides: Partial<Cache> = {}): Cache {
     lastRefreshStartedAt: 0,
     lastErrorMessage: null,
     rateLimitedUntilMs: 0,
+    nextRefreshAllowedAt: 0,
+    consecutiveRateLimitCount: 0,
     ...overrides,
   };
 }
@@ -1134,6 +1136,40 @@ describe('Scenario 21: stale threshold is 60 seconds', () => {
     expect(spawnCalls).toHaveLength(0);
     expect(output).not.toContain(STALE_MARKER);
   });
+
+  it('honors CC_STATUSLINE_ENTERPRISE_STALE_MS override', async () => {
+    vi.stubEnv('CC_STATUSLINE_ENTERPRISE_STALE_MS', '30');
+    vi.stubEnv('NO_COLOR', '1');
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage({}, {
+      lastUsageRefreshAt: NOW - 31 * 1000,
+    });
+
+    const { spawnCalls } = await runWithCache(
+      cache,
+      loadFixture('stdin-enterprise.json'),
+      { now: () => NOW },
+    );
+
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('clamps stale-threshold env to minimum (10s)', async () => {
+    vi.stubEnv('CC_STATUSLINE_ENTERPRISE_STALE_MS', '1000');
+    vi.stubEnv('NO_COLOR', '1');
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage({}, {
+      lastUsageRefreshAt: NOW - 11 * 1000,
+    });
+
+    const { spawnCalls } = await runWithCache(
+      cache,
+      loadFixture('stdin-enterprise.json'),
+      { now: () => NOW },
+    );
+
+    expect(spawnCalls).toHaveLength(1);
+  });
 });
 
 // ============================================================================
@@ -1363,6 +1399,25 @@ describe('Scenario 23: rate-limit cooldown — no spawn, hint appended', () => {
 
     expect(output).not.toContain(RATE_LIMITED_HINT_PREFIX.trim());
     // Cache is recent (30s old), so still no spawn — that's fine.
+    expect(spawnCalls).toHaveLength(0);
+  });
+
+  it('uses adaptive backoff cooldown even when rateLimitedUntilMs has expired', async () => {
+    vi.stubEnv('NO_COLOR', '1');
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage({}, {
+      lastUsageRefreshAt: NOW - 30 * 1000, // recent by stale rule
+      rateLimitedUntilMs: NOW - 1_000, // expired upstream cooldown
+      nextRefreshAllowedAt: NOW + 2 * 60 * 1000, // still backoff-restricted
+    });
+
+    const { output, spawnCalls } = await runWithCache(
+      cache,
+      loadFixture('stdin-enterprise.json'),
+      { now: () => NOW },
+    );
+
+    expect(output).toContain('retry in 2m');
     expect(spawnCalls).toHaveLength(0);
   });
 

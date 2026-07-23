@@ -71,7 +71,7 @@ const MOCK_USAGE: UsageResponse = {
 
 function makeValidCache(overrides: Partial<Cache> = {}): Cache {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     authState: 'ok',
     credentials: MOCK_CREDENTIALS,
     usage: MOCK_USAGE,
@@ -79,6 +79,8 @@ function makeValidCache(overrides: Partial<Cache> = {}): Cache {
     lastRefreshStartedAt: 0,
     lastErrorMessage: null,
     rateLimitedUntilMs: 0,
+    nextRefreshAllowedAt: 0,
+    consecutiveRateLimitCount: 0,
     ...overrides,
   };
 }
@@ -859,7 +861,7 @@ describe('T22: initial cache shape', () => {
     // Initial cache (before spawn) must have all expected fields
     expect(initialCacheSnapshot).not.toBeNull();
     const c = initialCacheSnapshot!;
-    expect(c.schemaVersion).toBe(2);
+    expect(c.schemaVersion).toBe(3);
     expect(c.authState).toBe('ok');
     expect(c.credentials).toBeDefined();
     expect(c.usage).toBeNull();
@@ -872,7 +874,7 @@ describe('T22: initial cache shape', () => {
     const fields: (keyof Cache)[] = [
       'schemaVersion', 'authState', 'credentials', 'usage',
       'lastUsageRefreshAt', 'lastRefreshStartedAt', 'lastErrorMessage',
-      'rateLimitedUntilMs',
+      'rateLimitedUntilMs', 'nextRefreshAllowedAt', 'consecutiveRateLimitCount',
     ];
     for (const field of fields) {
       expect(c[field]).not.toBeUndefined();

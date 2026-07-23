@@ -15,7 +15,7 @@ function cachePathOf(dir: string): string {
 
 function makeCache(overrides: Partial<Cache> = {}): Cache {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     authState: 'ok',
     credentials: {
       accessToken: 'sk-ant-secret-do-not-leak',
@@ -27,6 +27,8 @@ function makeCache(overrides: Partial<Cache> = {}): Cache {
     lastRefreshStartedAt: 0,
     lastErrorMessage: null,
     rateLimitedUntilMs: 0,
+    nextRefreshAllowedAt: 0,
+    consecutiveRateLimitCount: 0,
     ...overrides,
   };
 }

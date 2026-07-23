@@ -38,6 +38,24 @@ export interface RefreshDeps {
 
 type RequestEndpoint = 'token' | 'usage';
 type RequestResult = RefreshResult | FetchUsageResult;
+const RATE_LIMIT_BACKOFF_MAX_MS = 5 * 60 * 1000; // 5 minutes
+const RATE_LIMIT_BACKOFF_CAP_EXPONENT = 6; // max ×64
+
+function nextRateLimitCooldownUntil(
+  nowMs: number,
+  retryAfterSeconds: number,
+  consecutiveCount: number,
+): number {
+  const baseMs = retryAfterSeconds * 1000;
+  const exponent = Math.min(consecutiveCount + 1, RATE_LIMIT_BACKOFF_CAP_EXPONENT);
+  const adaptiveMs = baseMs * (1 << exponent);
+  const delayMs = Math.min(adaptiveMs, RATE_LIMIT_BACKOFF_MAX_MS);
+  return nowMs + delayMs;
+}
+
+function getRefreshCooldownUntilMs(cache: Cache, nowMs: number): number {
+  return Math.max(0, Math.max(cache.rateLimitedUntilMs, cache.nextRefreshAllowedAt) - nowMs);
+}
 
 function statusForResult(endpoint: RequestEndpoint, result: RequestResult): number | undefined {
   if (result.kind === 'success') return 200;
@@ -105,11 +123,12 @@ export async function runRefresh(
     // Step 2b: If still in rate-limit cooldown → exit silently. The renderer
     // also gates on this, but a stale install or a different code path could
     // still fire refresh, so guard here too.
-    if (initialCache.rateLimitedUntilMs > now()) {
+    const cooldownRemainingMs = getRefreshCooldownUntilMs(initialCache, now());
+    if (cooldownRemainingMs > 0) {
       await logger.log({
         event: 'refresh.skipped',
         reason: 'rate-limit-cooldown',
-        cooldownRemainingMs: initialCache.rateLimitedUntilMs - now(),
+        cooldownRemainingMs,
       });
       return 0;
     }
@@ -202,13 +221,20 @@ export async function runRefresh(
             formatRateLimitMessage('Token refresh rate-limited.', result),
             cache.credentials,
           );
+          const nextRefreshAllowedAt = nextRateLimitCooldownUntil(
+            now(),
+            result.retryAfterSeconds,
+            cache.consecutiveRateLimitCount,
+          );
           cache.lastErrorMessage = msg;
           cache.rateLimitedUntilMs = now() + result.retryAfterSeconds * 1000;
+          cache.nextRefreshAllowedAt = nextRefreshAllowedAt;
+          cache.consecutiveRateLimitCount += 1;
           await writeCache(cache, cachePath);
           await logger.log({
             event: 'refresh.completed',
             outcome: 'rate-limited',
-            cooldownUntilMs: cache.rateLimitedUntilMs,
+            cooldownUntilMs: Math.max(cache.rateLimitedUntilMs, cache.nextRefreshAllowedAt),
           });
           return 0;
         }
@@ -277,13 +303,20 @@ export async function runRefresh(
           formatRateLimitMessage('Usage fetch rate-limited.', usageResult),
           cache.credentials,
         );
+        const nextRefreshAllowedAt = nextRateLimitCooldownUntil(
+          now(),
+          usageResult.retryAfterSeconds,
+          cache.consecutiveRateLimitCount,
+        );
         cache.lastErrorMessage = msg;
         cache.rateLimitedUntilMs = now() + usageResult.retryAfterSeconds * 1000;
+        cache.nextRefreshAllowedAt = nextRefreshAllowedAt;
+        cache.consecutiveRateLimitCount += 1;
         await writeCache(cache, cachePath);
         await logger.log({
           event: 'refresh.completed',
           outcome: 'rate-limited',
-          cooldownUntilMs: cache.rateLimitedUntilMs,
+          cooldownUntilMs: Math.max(cache.rateLimitedUntilMs, cache.nextRefreshAllowedAt),
         });
         return 0;
       }
@@ -302,6 +335,8 @@ export async function runRefresh(
         cache.lastErrorMessage = null;
         cache.authState = 'ok';
         cache.rateLimitedUntilMs = 0;
+        cache.nextRefreshAllowedAt = 0;
+        cache.consecutiveRateLimitCount = 0;
         await writeCache(cache, cachePath);
         await logger.log({ event: 'refresh.completed', outcome: 'success' });
         return 0;

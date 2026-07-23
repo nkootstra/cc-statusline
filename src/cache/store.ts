@@ -7,7 +7,7 @@ import type { OAuthCredentials, UsageResponse } from '../oauth/types';
 export type AuthState = 'ok' | 'fatal' | 'cloudflare-blocked';
 
 export interface Cache {
-  schemaVersion: 2;
+  schemaVersion: 3;
   authState: AuthState;
   credentials: OAuthCredentials;
   usage: UsageResponse | null;
@@ -15,6 +15,10 @@ export interface Cache {
   lastRefreshStartedAt: number;   // epoch ms; 0 means none
   lastErrorMessage: string | null; // sanitized
   rateLimitedUntilMs: number;     // epoch ms; 0 means not rate-limited
+  // Adaptive 429 backoff. nextRefreshAllowedAt may be > rateLimitedUntilMs.
+  nextRefreshAllowedAt: number;   // epoch ms; 0 means no extra cooldown
+  // Consecutive backoff depth for repeated 429s.
+  consecutiveRateLimitCount: number; // 0 when no backoff streak
 }
 
 export function defaultCachePath(): string {
@@ -50,18 +54,34 @@ export function readCache(cachePath?: string): Cache | null {
   const version = obj['schemaVersion'];
 
   if (version === 2) {
-    return parsed as Cache;
+    return {
+      ...(obj as Omit<
+        Cache,
+        'schemaVersion' | 'nextRefreshAllowedAt' | 'consecutiveRateLimitCount'
+      >),
+      schemaVersion: 3,
+      nextRefreshAllowedAt: 0,
+      consecutiveRateLimitCount: 0,
+    };
   }
 
-  // v1 → v2: additive migration. v1 carried every field except rateLimitedUntilMs.
+  // v1/v2 → v3: additive migration to add adaptive backoff fields.
   // Bumping cleanly per AGENTS.md (every shape change bumps the version) while
   // preserving the user's tokens + usage across upgrade. Anything older or
   // unrecognized falls through to null so init can rebuild.
   if (version === 1) {
     return {
-      ...(obj as Omit<Cache, 'schemaVersion' | 'rateLimitedUntilMs'>),
-      schemaVersion: 2,
+      ...(obj as Omit<
+        Cache,
+        'schemaVersion' |
+          'rateLimitedUntilMs' |
+          'nextRefreshAllowedAt' |
+          'consecutiveRateLimitCount'
+      >),
+      schemaVersion: 3,
       rateLimitedUntilMs: 0,
+      nextRefreshAllowedAt: 0,
+      consecutiveRateLimitCount: 0,
     };
   }
 

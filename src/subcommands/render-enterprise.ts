@@ -29,7 +29,10 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-const STALE_THRESHOLD_MS = 60 * 1000; // 60 seconds
+const STALE_THRESHOLD_DEFAULT_MS = 60 * 1000; // 60 seconds
+const STALE_THRESHOLD_MIN_MS = 10 * 1000; // 10 seconds
+const STALE_THRESHOLD_MAX_MS = 300 * 1000; // 5 minutes
+const STALE_THRESHOLD_ENV = 'CC_STATUSLINE_ENTERPRISE_STALE_MS';
 
 /** Remediation hint appended when authState is 'fatal'. Must be ≤ 50 chars. */
 export const AUTH_FATAL_HINT = ' re-run init to re-auth';
@@ -155,6 +158,28 @@ function buildSessionCostSegment(sessionCostUsd: number): string {
   return `session $${sessionCostUsd.toFixed(2)}`;
 }
 
+function getStaleThresholdMs(): number {
+  const raw = process.env[STALE_THRESHOLD_ENV];
+  if (raw === undefined) {
+    return STALE_THRESHOLD_DEFAULT_MS;
+  }
+
+  const parsed = Number(raw.trim());
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return STALE_THRESHOLD_DEFAULT_MS;
+  }
+
+  const rounded = Math.floor(parsed);
+  return Math.max(STALE_THRESHOLD_MIN_MS, Math.min(STALE_THRESHOLD_MAX_MS, rounded));
+}
+
+function getCooldownRemainingMs(cache: Cache, nowMs: number): number {
+  return Math.max(
+    0,
+    Math.max(cache.rateLimitedUntilMs, cache.nextRefreshAllowedAt) - nowMs,
+  );
+}
+
 function buildExtraUsageSegment(extra: ExtraUsage): string {
   if (!hasCreditUsage(extra)) {
     return `usage ${MISSING}`;
@@ -245,9 +270,10 @@ function renderLine(
   input: NonNullable<ReturnType<typeof parseStdin>>,
   cache: Cache | null,
   nowMs: number,
+  staleThresholdMs: number,
 ): string {
   const staleAge = cache !== null ? nowMs - cache.lastUsageRefreshAt : Infinity;
-  const isStale = staleAge >= STALE_THRESHOLD_MS;
+  const isStale = staleAge >= staleThresholdMs;
 
   const modelSeg = buildModelSegment(input.model.display_name);
   const ctxSeg = buildCtxSegment(input.context_window?.used_percentage);
@@ -278,11 +304,14 @@ function renderLine(
     } else if (cache.authState === 'cloudflare-blocked') {
       // Render normally; just append hint.
       authHint = CLOUDFLARE_HINT;
-    } else if (cache.rateLimitedUntilMs > nowMs) {
-      // Currently rate-limited (cooldown not yet elapsed). Render figures
-      // normally — they're still the most recent we know — but tell the user
-      // when retries will resume.
-      authHint = formatRateLimitedHint(cache.rateLimitedUntilMs - nowMs);
+    } else {
+      const cooldownRemainingMs = getCooldownRemainingMs(cache, nowMs);
+      if (cooldownRemainingMs > 0) {
+        // Currently rate-limited (cooldown not yet elapsed). Render figures
+        // normally — they're still the most recent we know — but tell the user
+        // when retries will resume.
+        authHint = formatRateLimitedHint(cooldownRemainingMs);
+      }
     }
   }
 
@@ -323,6 +352,7 @@ export async function runRenderEnterprise(
   const cachePath = deps.cachePath ?? defaultCachePath();
   const bundlePath = deps.bundlePath ?? __filename;
   const now = deps.now ?? (() => Date.now());
+  const staleThresholdMs = getStaleThresholdMs();
   const logger = deps.logger ?? createDiagnosticLogger(defaultDiagnosticLogPath(cachePath), { now });
   const spawnFn = deps.spawnRefresh ?? defaultSpawnFn();
 
@@ -346,10 +376,13 @@ export async function runRenderEnterprise(
   // Step 2: Read cache synchronously.
   const cache = readCache(cachePath);
   const nowMs = now();
+  const refreshCooldownRemainingMs = cache !== null ? getCooldownRemainingMs(cache, nowMs) : 0;
+  const inCooldown = refreshCooldownRemainingMs > 0;
+  const inAdaptiveCooldown = cache !== null && cache.nextRefreshAllowedAt > cache.rateLimitedUntilMs;
 
   // Step 3: Decide whether to fire a refresh subprocess.
   const staleAge = cache !== null ? nowMs - cache.lastUsageRefreshAt : Infinity;
-  const isStale = staleAge >= STALE_THRESHOLD_MS;
+  const isStale = staleAge >= staleThresholdMs;
   const cacheIsMissing = cache === null;
 
   // Don't fire if authState is 'fatal' (init must rerun).
@@ -359,7 +392,8 @@ export async function runRenderEnterprise(
   const inFlight = cache !== null && isRefreshInFlight(cache, nowMs);
 
   // Don't fire while in rate-limit cooldown — would just earn another 429.
-  const inCooldown = cache !== null && cache.rateLimitedUntilMs > nowMs;
+  // Includes adaptive backoff from previous rate-limit events.
+  // `inAdaptiveCooldown` tracks if adaptive backoff is stricter than upstream.
 
   const shouldFire = (cacheIsMissing || isStale) && !authFatal && !inFlight && !inCooldown;
 
@@ -371,7 +405,7 @@ export async function runRenderEnterprise(
         : inFlight
           ? 'in-flight'
           : inCooldown
-            ? 'rate-limit-cooldown'
+            ? (inAdaptiveCooldown ? 'adaptive-backoff' : 'rate-limit-cooldown')
             : 'stale-cache';
     void logger.log({
       event: 'render.refresh_decision',
@@ -379,7 +413,7 @@ export async function runRenderEnterprise(
       reason,
       usageAgeMs: Number.isFinite(staleAge) ? staleAge : null,
       cooldownRemainingMs: inCooldown && cache !== null
-        ? cache.rateLimitedUntilMs - nowMs
+        ? refreshCooldownRemainingMs
         : 0,
     });
   }
@@ -401,7 +435,7 @@ export async function runRenderEnterprise(
   }
 
   // Step 4: Render.
-  const line = renderLine(input, cache, nowMs);
+  const line = renderLine(input, cache, nowMs, staleThresholdMs);
   process.stdout.write(line);
 
   return 0;

@@ -51,6 +51,7 @@ export async function runDoctor(
   }
 
   const nowMs = now();
+  const cooldownUntilMs = Math.max(cache.rateLimitedUntilMs, cache.nextRefreshAllowedAt);
 
   lines.push(`cache:         present (schemaVersion ${cache.schemaVersion})`);
   lines.push(`authState:     ${cache.authState}`);
@@ -64,8 +65,8 @@ export async function runDoctor(
   lines.push(`last usage:    ${lastUsageLabel}`);
 
   const cooldownLabel =
-    cache.rateLimitedUntilMs > nowMs
-      ? `cooling down ${formatRelativeMs(cache.rateLimitedUntilMs - nowMs)}`
+    cooldownUntilMs > nowMs
+      ? `cooling down ${formatRelativeMs(cooldownUntilMs - nowMs)}`
       : 'not rate-limited';
   lines.push(`rate limit:    ${cooldownLabel}`);
 
