@@ -51,6 +51,30 @@ Removes the statusline entry from `~/.claude/settings.json` and deletes the inst
 
 cc-statusline reads Claude Code's stored OAuth credential (macOS keychain or `~/.claude/.credentials.json`) once at install and copies it to `~/.claude/cc-statusline/cache.json` (mode `0600`). This file is rewritten as the token rotates. Compromise of your home directory exposes the same tokens Claude Code already exposes there.
 
+## Credentials and investigation
+
+During `init`, automatic credential discovery uses this order:
+
+1. macOS Keychain service `Claude Code-credentials` (macOS only)
+2. `~/.claude/.credentials.json`
+3. `~/.claude/credentials.json`
+
+`--credentials-path=<path>` overrides automatic discovery. The discovered OAuth envelope contains an `accessToken`, a `refreshToken`, and an expiry time. cc-statusline copies those values into its local cache and uses that cache for subsequent requests. The cache is located at `~/.claude/cc-statusline/cache.json`, or under `$CLAUDE_CONFIG_DIR/cc-statusline/cache.json` when `CLAUDE_CONFIG_DIR` is set.
+
+The `accessToken` is sent as a Bearer token to the usage endpoint. The `refreshToken` is sent to the OAuth token endpoint only when the access token is close to expiry; rotated credentials are then written back to the local cache. Reinstalling with `--force` can therefore replace the local cache with credentials rediscovered from the original source.
+
+`cc-statusline doctor` reports that API calls use the local cache. Current cache versions do not retain whether the cache was originally populated from Keychain, a credentials file, or `--credentials-path`, so `doctor` reports that origin as “not recorded.” The statusline’s diagnostics also cannot observe Claude Code or another application using the same account or OAuth credential; server-side/account-level evidence would be required for that.
+
+## Diagnostics
+
+Enterprise refresh decisions and OAuth request outcomes are recorded in a bounded, token-free JSONL log at `~/.claude/cc-statusline/debug.log`. To print the current cache state and retained diagnostic history, run:
+
+```bash
+cc-statusline doctor --logs
+```
+
+The log records endpoint labels, response status, request duration, refresh decisions, and rate-limit cooldown details. It never records access tokens, refresh tokens, authorization headers, or response bodies.
+
 ## Release
 
 Releases are published to npm as `@nkootstra/cc-statusline` from version tags (`v*`) through the GitHub Actions release workflow. The installed executable remains `cc-statusline`.

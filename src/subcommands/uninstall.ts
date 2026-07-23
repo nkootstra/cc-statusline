@@ -4,6 +4,7 @@
  * Removes:
  *   - <installDir>/cc-statusline.js
  *   - <installDir>/cache.json
+ *   - <installDir>/debug.log and its rotated backup
  *   - <installDir>/ (only if empty after above removals)
  *
  * Clears `statusLine` from ~/.claude/settings.json.
@@ -20,6 +21,11 @@ import {
   writeSettings,
   defaultSettingsPath,
 } from '../settings/mutator';
+import {
+  defaultDiagnosticLogDisabledPath,
+  defaultDiagnosticLogPath,
+  withDiagnosticLogLock,
+} from '../diagnostics/logger';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -59,15 +65,13 @@ function tryUnlink(filePath: string): void {
   }
 }
 
-function tryRmdir(dirPath: string): void {
+function tryRmdir(dirPath: string): boolean {
   try {
     fs.rmdirSync(dirPath);
+    return true;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTEMPTY') {
-      // ENOENT → already gone; ENOTEMPTY → user has other files, leave it
-      return;
-    }
+    if (code === 'ENOENT' || code === 'ENOTEMPTY') return false;
     throw err;
   }
 }
@@ -79,6 +83,9 @@ function tryRmdir(dirPath: string): void {
 export async function runUninstall(_args: string[], deps: UninstallDeps = {}): Promise<number> {
   const installDir = getInstallDir(deps.homedirOverride);
   const settingsFilePath = deps.settingsPath ?? defaultSettingsPath();
+  const logPath = defaultDiagnosticLogPath(path.join(installDir, 'cache.json'));
+  const disabledLogPath = defaultDiagnosticLogDisabledPath(logPath);
+  let removedInstallDir = false;
 
   // 1. Remove cc-statusline.js
   const rendererPath = path.join(installDir, 'cc-statusline.js');
@@ -88,10 +95,27 @@ export async function runUninstall(_args: string[], deps: UninstallDeps = {}): P
   const cachePath = path.join(installDir, 'cache.json');
   tryUnlink(cachePath);
 
-  // 3. Remove installDir if empty (leave if user added other files)
-  tryRmdir(installDir);
+  // 3. Disable diagnostics and remove diagnostic logs.
+  await withDiagnosticLogLock(logPath, async () => {
+    tryUnlink(logPath);
+    tryUnlink(`${logPath}.1`);
 
-  // 4. Clear statusLine from settings.json (if settings file exists)
+    // Remove installDir while lock is still held to prevent recreation races.
+    removedInstallDir = tryRmdir(installDir);
+    if (!removedInstallDir) {
+      try {
+        fs.writeFileSync(disabledLogPath, 'disabled by uninstall', { mode: 0o600 });
+      } catch {
+        // Disabled marker is advisory; best-effort write keeps uninstall idempotent.
+      }
+    }
+  });
+
+  // If uninstall could not remove installDir (usually ENOTEMPTY), we keep the
+  // disable marker so future writers skip diagnostics replay.
+  // If uninstall removed installDir, the disable marker is removed as part of dir removal.
+
+  // 5. Clear statusLine from settings.json (if settings file exists)
   const settings = readSettings(settingsFilePath);
   // readSettings returns {} if file does not exist — check if statusLine was there
   if ('statusLine' in settings) {

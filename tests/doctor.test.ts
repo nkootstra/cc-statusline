@@ -85,6 +85,8 @@ describe('runDoctor', () => {
     expect(output).toContain('authState:     ok');
     expect(output).toContain('last usage:    30s ago');
     expect(output).toContain('rate limit:    not rate-limited');
+    expect(output).toContain('credential use: local cache (cache.json)');
+    expect(output).toContain('credential origin: not recorded');
   });
 
   it('cooldown active: shows cooldown remaining', async () => {
@@ -124,5 +126,37 @@ describe('runDoctor', () => {
     await runDoctor([], { cachePath: cachePathOf(tmpDir), now: () => now });
     const output = captured.join('');
     expect(output).toContain('header present');
+  });
+
+  it('prints retained diagnostic events with --logs without exposing credentials', async () => {
+    const now = Date.now();
+    const cache = makeCache();
+    const cachePath = cachePathOf(tmpDir);
+    const logPath = path.join(tmpDir, 'debug.log');
+    await writeCache(cache, cachePath);
+    fs.writeFileSync(
+      logPath,
+      JSON.stringify({
+        timestamp: '2026-07-22T10:00:00.000Z',
+        pid: 123,
+        event: 'usage.response',
+        status: 429,
+        retryAfterSeconds: 120,
+      }) + '\n',
+      { mode: 0o600 },
+    );
+
+    await runDoctor(['--logs'], {
+      cachePath,
+      logPath,
+      now: () => now,
+    });
+
+    const output = captured.join('');
+    expect(output).toContain('diagnostics:');
+    expect(output).toContain('usage.response');
+    expect(output).toContain('"status":429');
+    expect(output).not.toContain('sk-ant-secret-do-not-leak');
+    expect(output).not.toContain('rt-secret-do-not-leak');
   });
 });

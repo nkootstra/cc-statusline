@@ -131,6 +131,7 @@ import {
 } from '../src/subcommands/render-enterprise';
 import { STALE_MARKER, MISSING } from '../src/statusline/format';
 import * as storeModule from '../src/cache/store';
+import type { DiagnosticLogger } from '../src/diagnostics/logger';
 
 // ---------------------------------------------------------------------------
 // Global setup / teardown
@@ -152,6 +153,7 @@ async function runWithCache(
   stdinContent: string,
   extra: {
     now?: () => number;
+    logger?: DiagnosticLogger;
     spawnCalls?: Array<{ command: string; args: string[]; opts: SpawnOptions }>;
   } = {},
 ): Promise<{ output: string; exitCode: number; spawnCalls: Array<{ command: string; args: string[]; opts: SpawnOptions }> }> {
@@ -167,6 +169,7 @@ async function runWithCache(
           cachePath: '/mocked',
           bundlePath: '/bundle.js',
           now: extra.now ?? (() => Date.now()),
+          logger: extra.logger ?? { log: async () => {} },
           spawnRefresh: (command, args, opts) => {
             calls.push({ command, args, opts });
             if (extra.spawnCalls) extra.spawnCalls.push({ command, args, opts });
@@ -649,6 +652,37 @@ describe('Scenario 10: refresh already in-flight — no new spawn', () => {
   });
 });
 
+describe('diagnostic refresh decisions', () => {
+  it('records a stale-cache spawn decision without changing rendered output', async () => {
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage({}, {
+      lastUsageRefreshAt: NOW - 5 * 60 * 1000,
+    });
+    const events: Array<Record<string, unknown>> = [];
+
+    const { output, spawnCalls } = await runWithCache(
+      cache,
+      loadFixture('stdin-enterprise.json'),
+      {
+        now: () => NOW,
+        logger: {
+          log: async (details) => {
+            events.push(details);
+          },
+        },
+      },
+    );
+
+    expect(spawnCalls).toHaveLength(1);
+    expect(output).toContain(STALE_MARKER);
+    expect(events).toContainEqual(expect.objectContaining({
+      event: 'render.refresh_decision',
+      action: 'spawn',
+      reason: 'stale-cache',
+    }));
+  });
+});
+
 // ============================================================================
 // Scenario 11 (R15): Synchronous bound — returns within 30ms even when spawn needed
 // ============================================================================
@@ -671,6 +705,7 @@ describe('Scenario 11 (R15): synchronous performance bound', () => {
           cachePath: '/mocked',
           bundlePath: '/bundle.js',
           now: () => NOW,
+          logger: { log: async () => {} },
           // Simulate async work in spawn — but runRenderEnterprise must not await it.
           spawnRefresh: (_command, _args, _opts) => {
             spawnCalled = true;
@@ -926,6 +961,7 @@ describe('Scenario 19: spawn shape differs by platform', () => {
             cachePath: '/mocked',
             bundlePath: '/my/bundle.js',
             now: () => NOW,
+            logger: { log: async () => {} },
             spawnRefresh: (command, args, opts) => capturedCalls.push({ command, args, opts }),
           },
         ),
@@ -962,6 +998,7 @@ describe('Scenario 19: spawn shape differs by platform', () => {
             cachePath: '/mocked',
             bundlePath: 'C:\\bundle.js',
             now: () => NOW,
+            logger: { log: async () => {} },
             spawnRefresh: (command, args, opts) => capturedCalls.push({ command, args, opts }),
           },
         ),
@@ -1003,6 +1040,7 @@ describe('Scenario 20: minimal env — no secrets passed to spawn', () => {
             cachePath: '/mocked',
             bundlePath: '/bundle.js',
             now: () => NOW,
+            logger: { log: async () => {} },
             spawnRefresh: (command, args, opts) => capturedCalls.push({ command, args, opts }),
           },
         ),
@@ -1035,6 +1073,7 @@ describe('Scenario 20: minimal env — no secrets passed to spawn', () => {
             cachePath: '/mocked',
             bundlePath: '/bundle.js',
             now: () => NOW,
+            logger: { log: async () => {} },
             spawnRefresh: (command, args, opts) => capturedCalls.push({ command, args, opts }),
           },
         ),

@@ -5,6 +5,7 @@ import * as path from 'path';
 import { runRefresh } from '../src/subcommands/refresh';
 import { readCache, writeCache, type Cache } from '../src/cache/store';
 import type { UsageResponse } from '../src/oauth/types';
+import { readDiagnosticLog } from '../src/diagnostics/logger';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -576,6 +577,14 @@ describe('runRefresh', () => {
     expect(result!.lastErrorMessage).toContain('header present');
     expect(result!.lastErrorMessage).toContain('x-should-retry: false');
     expect(result!.rateLimitedUntilMs).toBe(frozenNow + 120_000);
+
+    const log = await readDiagnosticLog(path.join(tmpDir, 'debug.log'));
+    expect(log).toContain('"event":"http.result"');
+    expect(log).toContain('"endpoint":"usage"');
+    expect(log).toContain('"status":429');
+    expect(log).toContain('"retryAfterSeconds":120');
+    expect(log).not.toContain('at-rl');
+    expect(log).not.toContain('rt-rl');
   });
 
   it('12b. rate-limited with header absent: lastErrorMessage notes default applied', async () => {

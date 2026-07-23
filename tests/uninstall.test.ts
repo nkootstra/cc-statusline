@@ -13,6 +13,7 @@ import * as path from 'node:path';
 import { runUninstall, type UninstallDeps } from '../src/subcommands/uninstall';
 import { readSettings, writeSettings } from '../src/settings/mutator';
 import { writeCache, type Cache } from '../src/cache/store';
+import { createDiagnosticLogger, defaultDiagnosticLogDisabledPath } from '../src/diagnostics/logger';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -63,6 +64,10 @@ function getCachePath(dir: string): string {
   return path.join(getInstallDir(dir), 'cache.json');
 }
 
+function getDiagnosticLogPath(dir: string): string {
+  return path.join(getInstallDir(dir), 'debug.log');
+}
+
 function writeRenderer(dir: string): void {
   const p = getRendererPath(dir);
   fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -88,6 +93,11 @@ async function writeTestCache(dir: string): Promise<void> {
     rateLimitedUntilMs: 0,
   };
   await writeCache(cache, getCachePath(dir));
+}
+
+function writeDiagnosticLogs(dir: string): void {
+  fs.writeFileSync(getDiagnosticLogPath(dir), '{"event":"test"}\n', { mode: 0o600 });
+  fs.writeFileSync(`${getDiagnosticLogPath(dir)}.1`, '{"event":"old"}\n', { mode: 0o600 });
 }
 
 const COMMAND = '/home/user/.claude/cc-statusline/cc-statusline.js render-promax';
@@ -119,6 +129,7 @@ describe('T1: AE6 clean install state', () => {
 
     writeRenderer(tmpDir);
     await writeTestCache(tmpDir);
+    writeDiagnosticLogs(tmpDir);
 
     // Write settings with statusLine and sibling keys
     writeJson(settingsPath(tmpDir), {
@@ -137,6 +148,10 @@ describe('T1: AE6 clean install state', () => {
 
     // Cache removed
     expect(fs.existsSync(getCachePath(tmpDir))).toBe(false);
+
+    // Diagnostic logs removed
+    expect(fs.existsSync(getDiagnosticLogPath(tmpDir))).toBe(false);
+    expect(fs.existsSync(`${getDiagnosticLogPath(tmpDir)}.1`)).toBe(false);
 
     // Install dir removed (was empty after above)
     expect(fs.existsSync(getInstallDir(tmpDir))).toBe(false);
@@ -295,5 +310,30 @@ describe('T7: re-running uninstall is idempotent', () => {
     // Second run — everything is already gone
     const code2 = await runUninstall([], deps);
     expect(code2).toBe(0);
+  });
+});
+
+describe('T8: uninstall disables active diagnostics replay', () => {
+  it('keeps a diagnostics disable marker so no new debug.log can be recreated after uninstall', async () => {
+    const tmpDir = makeTmpDir();
+
+    writeRenderer(tmpDir);
+    const customFile = path.join(getInstallDir(tmpDir), 'my-custom-config.json');
+    fs.writeFileSync(customFile, '{"custom": true}\n', 'utf8');
+    writeDiagnosticLogs(tmpDir);
+
+    const deps = baseDeps(tmpDir);
+    const code = await runUninstall([], deps);
+    expect(code).toBe(0);
+
+    const diagnosticPath = getDiagnosticLogPath(tmpDir);
+    const disabledPath = defaultDiagnosticLogDisabledPath(diagnosticPath);
+    expect(fs.existsSync(disabledPath)).toBe(true);
+    expect(fs.existsSync(diagnosticPath)).toBe(false);
+    expect(fs.existsSync(`${diagnosticPath}.1`)).toBe(false);
+    expect(fs.existsSync(getInstallDir(tmpDir))).toBe(true);
+
+    await createDiagnosticLogger(diagnosticPath).log({ event: 'refresh.skipped' });
+    expect(fs.existsSync(diagnosticPath)).toBe(false);
   });
 });

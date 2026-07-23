@@ -1,7 +1,12 @@
 import { readCache, defaultCachePath, isRefreshInFlight } from '../cache/store';
+import {
+  defaultDiagnosticLogPath,
+  readDiagnosticLog,
+} from '../diagnostics/logger';
 
 export interface DoctorDeps {
   cachePath?: string;
+  logPath?: string;
   now?: () => number;
 }
 
@@ -17,11 +22,13 @@ function formatRelativeMs(ms: number): string {
 }
 
 export async function runDoctor(
-  _args: string[] = [],
+  args: string[] = [],
   deps: DoctorDeps = {},
 ): Promise<number> {
   const cachePath = deps.cachePath ?? defaultCachePath();
+  const logPath = deps.logPath ?? defaultDiagnosticLogPath(cachePath);
   const now = deps.now ?? (() => Date.now());
+  const showLogs = args.includes('--logs');
 
   const lines: string[] = ['cc-statusline doctor', ''];
   lines.push(`cache path:    ${cachePath}`);
@@ -30,6 +37,13 @@ export async function runDoctor(
 
   if (cache === null) {
     lines.push('cache:         absent or unreadable');
+    lines.push('credential use: unavailable (cache absent)');
+    lines.push('credential origin: not recorded');
+    lines.push(`diagnostics:   ${logPath}`);
+    if (showLogs) {
+      const log = await readDiagnosticLog(logPath);
+      if (log.length > 0) lines.push('', log.trimEnd());
+    }
     lines.push('');
     lines.push('Re-run `npx @nkootstra/cc-statusline --plan <pro|max|enterprise>` to install.');
     process.stdout.write(lines.join('\n') + '\n');
@@ -40,6 +54,8 @@ export async function runDoctor(
 
   lines.push(`cache:         present (schemaVersion ${cache.schemaVersion})`);
   lines.push(`authState:     ${cache.authState}`);
+  lines.push('credential use: local cache (cache.json)');
+  lines.push('credential origin: not recorded');
 
   const lastUsageLabel =
     cache.lastUsageRefreshAt === 0
@@ -63,6 +79,12 @@ export async function runDoctor(
   lines.push(`token expiry:  ${expiryLabel}`);
 
   lines.push(`last error:    ${cache.lastErrorMessage ?? 'none'}`);
+  lines.push(`diagnostics:   ${logPath}`);
+
+  if (showLogs) {
+    const log = await readDiagnosticLog(logPath);
+    lines.push('', log.length > 0 ? log.trimEnd() : '(no diagnostic events)');
+  }
 
   process.stdout.write(lines.join('\n') + '\n');
   return 0;
