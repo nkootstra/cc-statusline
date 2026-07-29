@@ -31,7 +31,9 @@
   },
   "scripts": {
     "build": "tsup",
-    "test": "vitest run",
+    "test": "npm run test:suite && npm run test:isolated",
+    "test:isolated": "vitest run tests/build-smoke.test.ts tests/render-enterprise-runtime.test.ts --maxWorkers=1",
+    "test:suite": "vitest run --exclude tests/build-smoke.test.ts --exclude tests/render-enterprise-runtime.test.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run typecheck && npm run build && npm test"

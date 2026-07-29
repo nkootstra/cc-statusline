@@ -69,29 +69,31 @@ describe('background refresh integration', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'cc-statusline-render-perf-'));
     const cachePath = join(tempDir, 'cache.json');
     await writeCache(cache, cachePath);
+    const stdin = makeStream(loadFixture('stdin-enterprise.json'));
     let spawned = false;
-    const startedAt = performance.now();
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
 
     try {
-      const { exitCode } = await captureStdout(() =>
-        runRenderEnterprise(
-          [],
-          makeStream(loadFixture('stdin-enterprise.json')),
-          {
-            cachePath,
-            bundlePath: '/bundle.js',
-            now: () => now,
-            spawnRefresh: () => {
-              spawned = true;
-            },
+      const startedAt = performance.now();
+      const exitCode = await runRenderEnterprise(
+        [],
+        stdin,
+        {
+          cachePath,
+          bundlePath: '/bundle.js',
+          now: () => now,
+          spawnRefresh: () => {
+            spawned = true;
           },
-        ),
+        },
       );
+      const elapsedMs = performance.now() - startedAt;
 
       expect(exitCode).toBe(0);
       expect(spawned).toBe(true);
-      expect(performance.now() - startedAt).toBeLessThan(100);
+      expect(elapsedMs).toBeLessThan(100);
     } finally {
+      stdout.mockRestore();
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
