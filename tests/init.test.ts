@@ -581,7 +581,7 @@ describe('credential validation and cache persistence', () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(readCache(cachePath(tmpDir))?.credentialSource).toEqual({
       kind: 'file',
-      path: fs.realpathSync(credentialsFile),
+      path: await fs.promises.realpath(credentialsFile),
     });
   });
 
@@ -711,8 +711,9 @@ describe('settings, platform, and installer regressions', () => {
       platformOverride: 'win32',
     }))).toBe(0);
     const windowsCommand = readSettings(settingsPath(windowsDir)).statusLine?.command;
-    expect(windowsCommand).toBe(`node ${bundlePath(windowsDir)} render-promax`);
-    expect(windowsCommand).not.toContain('~');
+    const windowsBundlePath = bundlePath(windowsDir);
+    expect(path.isAbsolute(windowsBundlePath)).toBe(true);
+    expect(windowsCommand).toBe(`node ${windowsBundlePath} render-promax`);
 
     const posixDir = makeTmpDir();
     expect(await runInit(['--plan=pro'], baseDeps(posixDir))).toBe(0);

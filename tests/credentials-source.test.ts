@@ -57,7 +57,7 @@ describe('loadCredentialSource', () => {
 
       expect(source).toEqual({
         kind: 'file',
-        path: fs.realpathSync(credentialsPath),
+        path: await fs.promises.realpath(credentialsPath),
       });
       expect(credentials).toEqual({
         accessToken: 'file-access',
