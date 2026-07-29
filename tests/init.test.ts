@@ -1,33 +1,47 @@
-/**
- * Tests for src/subcommands/init.ts
- *
- * All file I/O uses temp dirs under os.tmpdir().
- * No real keychain access, no real ~/.claude/ is touched.
- * The test suite covers all 25 scenarios specified in U9.
- */
-
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { createHash } from 'node:crypto';
-import { runInit, type InitDeps } from '../src/subcommands/init';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  runInit,
+  type InitDeps,
+  type SpawnClaudeResult,
+} from '../src/subcommands/init';
 import { readCache, writeCache, type Cache } from '../src/cache/store';
+import { CredentialNotFoundError } from '../src/credentials/discover';
 import { readSettings } from '../src/settings/mutator';
-import type { OAuthCredentials, UsageResponse } from '../src/oauth/types';
+import type { OAuthCredentials } from '../src/credentials/envelope';
+import type { UsageResponse } from '../src/oauth/types';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+const NOW = Date.parse('2026-07-28T12:00:00Z');
+
+const MOCK_CREDENTIALS: OAuthCredentials = {
+  accessToken: 'sk-ant-access-token',
+  refreshToken: 'rt-refresh-token',
+  expiresAt: NOW + 3_600_000,
+};
+
+const MOCK_USAGE: UsageResponse = {
+  five_hour: { utilization: 10, resets_at: '2026-07-28T17:00:00Z' },
+  seven_day: { utilization: 20, resets_at: '2026-08-04T00:00:00Z' },
+};
+
+const tmpDirs: string[] = [];
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  for (const dir of tmpDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 function makeTmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'cc-init-test-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-init-test-'));
+  tmpDirs.push(dir);
+  return dir;
 }
 
-// All paths mirror production layout under <homedir>/.claude/. The init impl
-// derives the install dir from homedirOverride; tests must look in the same
-// place. settings/cache paths are also overridden via InitDeps to put them
-// under .claude/ so re-reads via readSettings/readCache observe the same files.
 function settingsPath(dir: string): string {
   return path.join(dir, '.claude', 'settings.json');
 }
@@ -40,42 +54,46 @@ function bundlePath(dir: string): string {
   return path.join(dir, '.claude', 'cc-statusline', 'cc-statusline.js');
 }
 
-function writeJson(filePath: string, obj: unknown): void {
+function makeFakeBundle(dir: string, content = '#!/usr/bin/env node\n'): string {
+  const filePath = path.join(dir, 'fake-bundle.js');
+  fs.writeFileSync(filePath, content, 'utf8');
+  return filePath;
+}
+
+function writeJson(filePath: string, value: unknown): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(obj, null, 2) + '\n', 'utf8');
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
 function fileHash(filePath: string): string {
-  const buf = fs.readFileSync(filePath);
-  return createHash('sha256').update(buf).digest('hex');
+  return createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
-const MOCK_CREDENTIALS: OAuthCredentials = {
-  accessToken: 'sk-ant-access-token',
-  refreshToken: 'rt-refresh-token',
-  expiresAt: Date.now() + 3_600_000, // 1 hour from now
-};
+function makeFetch(status = 200): typeof fetch {
+  return vi.fn(async () => {
+    const body = status === 200 ? JSON.stringify(MOCK_USAGE) : undefined;
+    const headers = status === 429 ? { 'Retry-After': '12' } : undefined;
+    return new Response(body, { status, headers });
+  }) as unknown as typeof fetch;
+}
 
-const VALID_ENVELOPE = {
-  claudeAiOauth: {
-    accessToken: MOCK_CREDENTIALS.accessToken,
-    refreshToken: MOCK_CREDENTIALS.refreshToken,
-    expiresAt: MOCK_CREDENTIALS.expiresAt,
-  },
-};
+function makeThrowingFetch(message = 'timed out'): typeof fetch {
+  return vi.fn(async () => {
+    throw new Error(message);
+  }) as unknown as typeof fetch;
+}
 
-const MOCK_USAGE: UsageResponse = {
-  five_hour: { utilization: 0.1, resetsAt: '2026-05-03T12:00:00Z' },
-  seven_day: { utilization: 0.2, resetsAt: '2026-05-10T00:00:00Z' },
-};
-
-function makeValidCache(overrides: Partial<Cache> = {}): Cache {
+function makeCache(overrides: Partial<Cache> = {}): Cache {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     authState: 'ok',
-    credentials: MOCK_CREDENTIALS,
+    credentials: {
+      accessToken: MOCK_CREDENTIALS.accessToken,
+      expiresAt: MOCK_CREDENTIALS.expiresAt,
+    },
+    credentialSource: { kind: 'claude-code' },
     usage: MOCK_USAGE,
-    lastUsageRefreshAt: Date.now(),
+    lastUsageRefreshAt: NOW,
     lastRefreshStartedAt: 0,
     lastErrorMessage: null,
     rateLimitedUntilMs: 0,
@@ -85,921 +103,720 @@ function makeValidCache(overrides: Partial<Cache> = {}): Cache {
   };
 }
 
-/**
- * Build a spawnRefresh mock that writes a cache with the given state after
- * being called. Returns the mock function.
- */
-function makeSpawnRefresh(
-  cacheDir: string,
-  cacheOverrides: Partial<Cache> = {},
-): InitDeps['spawnRefresh'] {
-  return vi.fn((_args, _opts) => {
-    const cFile = path.join(cacheDir, '.claude', 'cc-statusline', 'cache.json');
-    const cache = makeValidCache(cacheOverrides);
-    fs.mkdirSync(path.dirname(cFile), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(cFile, JSON.stringify(cache, null, 2) + '\n', 'utf8');
-    return { status: 0 };
-  });
-}
-
-/**
- * Build default deps for testing without touching real ~/.claude/.
- */
-function baseDeps(tmpDir: string, extra: Partial<InitDeps> = {}): InitDeps {
+function baseDeps(tmpDir: string, overrides: Partial<InitDeps> = {}): InitDeps {
   return {
     homedirOverride: tmpDir,
     platformOverride: 'linux',
-    bundlePathOverride: path.join(tmpDir, 'fake-bundle.js'),
+    bundlePathOverride: makeFakeBundle(tmpDir),
     versionString: '1.2.3',
     settingsPath: settingsPath(tmpDir),
     cachePath: cachePath(tmpDir),
     isInteractive: false,
-    ...extra,
+    now: () => NOW,
+    fetchImpl: makeFetch(),
+    discoverImpl: vi.fn().mockResolvedValue(MOCK_CREDENTIALS),
+    spawnClaude: vi.fn(),
+    ...overrides,
   };
 }
 
-function makeFakeBundle(dir: string): string {
-  const p = path.join(dir, 'fake-bundle.js');
-  fs.writeFileSync(p, '#!/usr/bin/env node\n// fake bundle\n', 'utf8');
-  return p;
-}
-
-// Capture stdout during a call
-async function captureStdout(fn: () => Promise<number>): Promise<{ code: number; output: string }> {
+function captureStream(
+  stream: NodeJS.WriteStream,
+  fn: () => Promise<number>,
+): Promise<{ code: number; output: string }> {
   const chunks: string[] = [];
-  const originalWrite = process.stdout.write.bind(process.stdout) as typeof process.stdout.write;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (process.stdout as any).write = (chunk: string | Uint8Array, ...rest: unknown[]) => {
-    chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
-    return (originalWrite as (c: string | Uint8Array, ...a: unknown[]) => boolean)(chunk, ...rest);
-  };
-  try {
-    const code = await fn();
-    return { code, output: chunks.join('') };
-  } finally {
-    process.stdout.write = originalWrite;
-  }
+  const writeSpy = vi.spyOn(stream, 'write').mockImplementation(
+    ((chunk: string | Uint8Array) => {
+      chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+      return true;
+    }) as typeof stream.write,
+  );
+  return fn()
+    .then((code) => ({ code, output: chunks.join('') }))
+    .finally(() => writeSpy.mockRestore());
 }
 
-// Capture stderr during a call
-async function captureStderr(fn: () => Promise<number>): Promise<{ code: number; output: string }> {
-  const chunks: string[] = [];
-  const originalWrite = process.stderr.write.bind(process.stderr) as typeof process.stderr.write;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (process.stderr as any).write = (chunk: string | Uint8Array, ...rest: unknown[]) => {
-    chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
-    return (originalWrite as (c: string | Uint8Array, ...a: unknown[]) => boolean)(chunk, ...rest);
-  };
-  try {
-    const code = await fn();
-    return { code, output: chunks.join('') };
-  } finally {
-    process.stderr.write = originalWrite;
-  }
+function captureStdout(fn: () => Promise<number>): Promise<{ code: number; output: string }> {
+  return captureStream(process.stdout, fn);
 }
 
-// ---------------------------------------------------------------------------
-// Test 1: Happy path (Pro/Max, interactive) — user picks 1 (Pro)
-// ---------------------------------------------------------------------------
+function captureStderr(fn: () => Promise<number>): Promise<{ code: number; output: string }> {
+  return captureStream(process.stderr, fn);
+}
 
-describe('T1: happy path Pro interactive', () => {
-  it('picks Pro at the prompt; copies bundle; sets render-promax command; no cache.json; no discover', async () => {
-    const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-
-    const discoverSpy = vi.fn();
-    const spawnSpy = vi.fn();
-
-    // stdinReader returns '1' for Pro
-    const deps = baseDeps(tmpDir, {
-      isInteractive: true,
-      stdinReader: vi.fn().mockResolvedValue('1'),
-      discoverImpl: discoverSpy as InitDeps['discoverImpl'],
-      spawnRefresh: spawnSpy,
-    });
-
-    const code = await runInit([], deps);
-    expect(code).toBe(0);
-
-    // Bundle was copied
-    expect(fs.existsSync(bundlePath(tmpDir))).toBe(true);
-
-    // Settings has render-promax
-    const s = readSettings(settingsPath(tmpDir));
-    expect(s.statusLine?.command).toMatch(/render-promax/);
-
-    // No cache.json (R3)
-    expect(fs.existsSync(cachePath(tmpDir))).toBe(false);
-
-    // No discover calls
-    expect(discoverSpy).not.toHaveBeenCalled();
-
-    // No spawn calls
-    expect(spawnSpy).not.toHaveBeenCalled();
+function authRecoveryDeps(
+  tmpDir: string,
+  statusResult: SpawnClaudeResult,
+  loginResult: SpawnClaudeResult = { status: 0, signal: null },
+) {
+  const discoverImpl = vi.fn()
+    .mockRejectedValueOnce(new CredentialNotFoundError(['/mock/credentials.json']))
+    .mockResolvedValueOnce(MOCK_CREDENTIALS);
+  const spawnClaude = vi.fn((
+    _command: string,
+    argv: readonly string[],
+    _options: Parameters<NonNullable<InitDeps['spawnClaude']>>[2],
+  ) => {
+    return argv[1] === 'status' ? statusResult : loginResult;
   });
-});
+  const deps = baseDeps(tmpDir, {
+    isInteractive: true,
+    discoverImpl: discoverImpl as InitDeps['discoverImpl'],
+    spawnClaude,
+  });
+  return {
+    deps,
+    spawnClaude,
+    discoverImpl,
+  };
+}
 
-// ---------------------------------------------------------------------------
-// Test 2: Happy path (Pro/Max, non-interactive) — --plan=pro
-// ---------------------------------------------------------------------------
-
-describe('T2: happy path Pro non-interactive --plan=pro', () => {
-  it('short-circuits the prompt; copies bundle; sets render-promax; no cache', async () => {
+describe('plan selection and Pro/Max installation', () => {
+  it.each([
+    [['--plan=pro'], 'pro'],
+    [['--plan', 'max'], 'max'],
+  ])('accepts %j without reading stdin', async (args) => {
     const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
+    const stdinReader = vi.fn();
+    const deps = baseDeps(tmpDir, { stdinReader, isInteractive: true });
 
-    const deps = baseDeps(tmpDir, { isInteractive: false });
-
-    const code = await runInit(['--plan=pro'], deps);
-    expect(code).toBe(0);
-
-    expect(fs.existsSync(bundlePath(tmpDir))).toBe(true);
-    const s = readSettings(settingsPath(tmpDir));
-    expect(s.statusLine?.command).toMatch(/render-promax/);
+    expect(await runInit(args, deps)).toBe(0);
+    expect(stdinReader).not.toHaveBeenCalled();
+    expect(readSettings(settingsPath(tmpDir)).statusLine?.command).toContain('render-promax');
     expect(fs.existsSync(cachePath(tmpDir))).toBe(false);
   });
 
-  it('accepts --plan with a separate value', async () => {
+  it('prompts for a plan only when interaction is available', async () => {
     const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
+    const stdinReader = vi.fn().mockResolvedValue('1');
 
-    const deps = baseDeps(tmpDir, { isInteractive: false });
+    expect(await runInit([], baseDeps(tmpDir, { isInteractive: true, stdinReader }))).toBe(0);
+    expect(stdinReader).toHaveBeenCalledOnce();
+  });
 
-    const code = await runInit(['--plan', 'pro'], deps);
-    expect(code).toBe(0);
+  it('requires --plan in non-interactive mode without reading stdin', async () => {
+    const tmpDir = makeTmpDir();
+    const stdinReader = vi.fn();
+    const { code, output } = await captureStderr(() =>
+      runInit(['--non-interactive'], baseDeps(tmpDir, { isInteractive: true, stdinReader })),
+    );
 
-    const s = readSettings(settingsPath(tmpDir));
-    expect(s.statusLine?.command).toMatch(/render-promax/);
-    expect(fs.existsSync(cachePath(tmpDir))).toBe(false);
+    expect(code).toBe(1);
+    expect(output).toContain('--plan');
+    expect(stdinReader).not.toHaveBeenCalled();
+    expect(fs.existsSync(bundlePath(tmpDir))).toBe(false);
   });
 });
 
-// ---------------------------------------------------------------------------
-// Test 3: Happy path (Enterprise, interactive, macOS)
-// ---------------------------------------------------------------------------
-
-describe('T3: happy path Enterprise interactive macOS', () => {
-  it('discovers via mock; writes initial cache; invokes refresh; settings updated; spawn called once', async () => {
+describe('guided Claude Code authentication recovery', () => {
+  it('--plan skips only plan selection and still launches login with an injected TTY', async () => {
     const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
+    const { deps, spawnClaude } = authRecoveryDeps(
+      tmpDir,
+      { status: 0, signal: null, stdout: '{"loggedIn":false}' },
+    );
 
-    const discoverSpy = vi.fn().mockResolvedValue(MOCK_CREDENTIALS);
-    const spawnSpy = makeSpawnRefresh(tmpDir, { usage: MOCK_USAGE });
+    expect(await runInit(['--plan=enterprise'], deps)).toBe(0);
+    expect(spawnClaude).toHaveBeenCalledTimes(2);
+  });
 
-    const deps = baseDeps(tmpDir, {
-      platformOverride: 'darwin',
+  it.each([
+    ['logged out with documented exit 1', { status: 1, signal: null, stdout: '{"loggedIn":false}' }],
+    ['logged in', { status: 0, signal: null, stdout: '{"loggedIn":true}' }],
+    ['malformed output', { status: 0, signal: null, stdout: 'not json' }],
+    ['missing CLI', { status: null, signal: null, error: Object.assign(new Error('missing'), { code: 'ENOENT' }) }],
+  ] satisfies Array<[string, SpawnClaudeResult]>)(
+    'treats status result %s as explanatory and invokes exactly one login',
+    async (_label, statusResult) => {
+      const tmpDir = makeTmpDir();
+      const { deps, spawnClaude, discoverImpl } = authRecoveryDeps(tmpDir, statusResult);
+
+      expect(await runInit(['--plan=enterprise'], deps)).toBe(0);
+      expect(spawnClaude).toHaveBeenCalledTimes(2);
+      expect(spawnClaude.mock.calls.map((call) => call[1])).toEqual([
+        ['auth', 'status'],
+        ['auth', 'login'],
+      ]);
+      expect(discoverImpl).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('uses exact safe status and login subprocess options', async () => {
+    const tmpDir = makeTmpDir();
+    const { deps, spawnClaude } = authRecoveryDeps(
+      tmpDir,
+      { status: 0, signal: null, stdout: '{"loggedIn":true}' },
+    );
+
+    expect(await runInit(['--plan', 'enterprise'], deps)).toBe(0);
+
+    const statusCall = spawnClaude.mock.calls[0];
+    const loginCall = spawnClaude.mock.calls[1];
+    expect(statusCall?.[0]).toBe('claude');
+    expect(statusCall?.[1]).toEqual(['auth', 'status']);
+    expect(statusCall?.[2]).toMatchObject({
+      shell: false,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 10_000,
+      encoding: 'utf8',
+    });
+    expect(loginCall?.[0]).toBe('claude');
+    expect(loginCall?.[1]).toEqual(['auth', 'login']);
+    expect(loginCall?.[2]).toMatchObject({
+      shell: false,
+      stdio: 'inherit',
+    });
+    expect(loginCall?.[2]).not.toHaveProperty('timeout');
+    expect(Object.keys(statusCall?.[2].env ?? {}).sort()).toEqual(['HOME', 'PATH']);
+  });
+
+  it('rediscovers once and validates once after login, without looping', async () => {
+    const tmpDir = makeTmpDir();
+    const fetchImpl = makeFetch();
+    const { deps, spawnClaude, discoverImpl } = authRecoveryDeps(
+      tmpDir,
+      { status: 1, signal: null, stdout: '' },
+    );
+    deps.fetchImpl = fetchImpl;
+
+    expect(await runInit(['--plan=enterprise'], deps)).toBe(0);
+    expect(discoverImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(spawnClaude).toHaveBeenCalledTimes(2);
+  });
+
+  it('treats an automatic usage 401 as auth failure and recovers once', async () => {
+    const tmpDir = makeTmpDir();
+    const discoverImpl = vi.fn().mockResolvedValue(MOCK_CREDENTIALS);
+    const spawnClaude = vi.fn((
+      _command: string,
+      argv: readonly string[],
+      _options: Parameters<NonNullable<InitDeps['spawnClaude']>>[2],
+    ) => argv[1] === 'status'
+      ? { status: 0, signal: null, stdout: '{"loggedIn":true}' }
+      : { status: 0, signal: null });
+    const fetchImpl = (vi.fn()
+      .mockResolvedValueOnce(new Response(undefined, { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(MOCK_USAGE), { status: 200 }))
+    ) as unknown as typeof fetch;
+
+    expect(await runInit(['--plan=enterprise'], baseDeps(tmpDir, {
       isInteractive: true,
-      stdinReader: vi.fn().mockResolvedValue('3'),
-      discoverImpl: discoverSpy as InitDeps['discoverImpl'],
-      spawnRefresh: spawnSpy,
-    });
-
-    const { code, output } = await captureStdout(() => runInit([], deps));
-    expect(code).toBe(0);
-
-    // Discover was called
-    expect(discoverSpy).toHaveBeenCalledOnce();
-    // Spawn refresh was called once
-    expect(spawnSpy).toHaveBeenCalledOnce();
-
-    // Settings has render-enterprise
-    const s = readSettings(settingsPath(tmpDir));
-    expect(s.statusLine?.command).toMatch(/render-enterprise/);
-
-    // Cache exists
-    const cache = readCache(cachePath(tmpDir));
-    expect(cache).not.toBeNull();
-    expect(cache?.authState).toBe('ok');
-
-    // Output includes success message
-    expect(output).toContain('Enterprise statusline installed');
-
-    // Always Allow banner printed on macOS
-    expect(output).toContain('Always Allow');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 4: Happy path (Enterprise, non-interactive with --credentials-path)
-// ---------------------------------------------------------------------------
-
-describe('T4: happy path Enterprise non-interactive with --credentials-path', () => {
-  it('reads from specified path; skips discover; completes install', async () => {
-    const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-
-    // Write a valid credentials file inside homedir
-    const credFile = path.join(tmpDir, '.claude', 'test-creds.json');
-    fs.mkdirSync(path.dirname(credFile), { recursive: true });
-    fs.writeFileSync(credFile, JSON.stringify(VALID_ENVELOPE), 'utf8');
-
-    const discoverSpy = vi.fn();
-    const spawnSpy = makeSpawnRefresh(tmpDir, { usage: MOCK_USAGE });
-
-    const deps = baseDeps(tmpDir, {
-      discoverImpl: discoverSpy as InitDeps['discoverImpl'],
-      spawnRefresh: spawnSpy,
-    });
-
-    const code = await runInit(
-      [`--plan=enterprise`, `--credentials-path=${credFile}`],
-      deps,
-    );
-    expect(code).toBe(0);
-
-    // No discover called
-    expect(discoverSpy).not.toHaveBeenCalled();
-
-    // Cache written
-    const cache = readCache(cachePath(tmpDir));
-    expect(cache).not.toBeNull();
-    expect(cache?.authState).toBe('ok');
-
-    // Settings has render-enterprise
-    const s = readSettings(settingsPath(tmpDir));
-    expect(s.statusLine?.command).toMatch(/render-enterprise/);
+      discoverImpl: discoverImpl as InitDeps['discoverImpl'],
+      spawnClaude,
+      fetchImpl,
+    }))).toBe(0);
+    expect(discoverImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(spawnClaude).toHaveBeenCalledTimes(2);
   });
 
-  it('accepts --plan enterprise with a separate value', async () => {
+  it('recovers expired automatic credentials and samples time through persistence', async () => {
     const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
+    const postLoginCredentials = {
+      ...MOCK_CREDENTIALS,
+      accessToken: 'sk-ant-post-login',
+      expiresAt: NOW + 1_500,
+    };
+    const discoverImpl = vi.fn()
+      .mockResolvedValueOnce({ ...MOCK_CREDENTIALS, expiresAt: NOW })
+      .mockResolvedValueOnce(postLoginCredentials);
+    const spawnClaude = vi.fn((
+      _command: string,
+      argv: readonly string[],
+      _options: Parameters<NonNullable<InitDeps['spawnClaude']>>[2],
+    ) => argv[1] === 'status'
+      ? { status: 0, signal: null, stdout: '{"loggedIn":true}' }
+      : { status: 0, signal: null });
+    const now = vi.fn()
+      .mockReturnValueOnce(NOW)
+      .mockReturnValueOnce(NOW + 1_000)
+      .mockReturnValueOnce(NOW + 2_000);
+    const fetchImpl = makeFetch();
 
-    const credFile = path.join(tmpDir, '.claude', 'test-creds.json');
-    fs.mkdirSync(path.dirname(credFile), { recursive: true });
-    fs.writeFileSync(credFile, JSON.stringify(VALID_ENVELOPE), 'utf8');
-
-    const discoverSpy = vi.fn();
-    const spawnSpy = makeSpawnRefresh(tmpDir, { usage: MOCK_USAGE });
-
-    const deps = baseDeps(tmpDir, {
-      discoverImpl: discoverSpy as InitDeps['discoverImpl'],
-      spawnRefresh: spawnSpy,
-    });
-
-    const code = await runInit(
-      ['--plan', 'enterprise', `--credentials-path=${credFile}`, '--force'],
-      deps,
-    );
-    expect(code).toBe(0);
-    expect(discoverSpy).not.toHaveBeenCalled();
-    expect(spawnSpy).toHaveBeenCalledOnce();
-
-    const s = readSettings(settingsPath(tmpDir));
-    expect(s.statusLine?.command).toMatch(/render-enterprise/);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 5: AE5 — settings conflict, interactive, user says 'n'
-// ---------------------------------------------------------------------------
-
-describe('T5: AE5 settings conflict interactive answer n', () => {
-  it('existing statusLine.command differs; user says n; settings.json unchanged; no cache; exit 0', async () => {
-    const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-
-    // Write settings with an existing different command
-    writeJson(settingsPath(tmpDir), {
-      statusLine: { type: 'command', command: '/other/tool render-something' },
-    });
-
-    const deps = baseDeps(tmpDir, {
+    expect(await runInit(['--plan=enterprise'], baseDeps(tmpDir, {
       isInteractive: true,
-      stdinReader: vi.fn()
-        .mockResolvedValueOnce('1')   // plan choice
-        .mockResolvedValueOnce('n'),  // conflict prompt
+      discoverImpl: discoverImpl as InitDeps['discoverImpl'],
+      spawnClaude,
+      now,
+      fetchImpl,
+    }))).toBe(0);
+
+    expect(discoverImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(spawnClaude.mock.calls.map((call) => call[1])).toEqual([
+      ['auth', 'status'],
+      ['auth', 'login'],
+    ]);
+    expect(now).toHaveBeenCalledTimes(3);
+    expect(readCache(cachePath(tmpDir))).toMatchObject({
+      credentials: {
+        accessToken: postLoginCredentials.accessToken,
+        expiresAt: postLoginCredentials.expiresAt,
+      },
+      credentialSource: { kind: 'claude-code' },
+      usage: MOCK_USAGE,
+      lastUsageRefreshAt: NOW + 2_000,
     });
-
-    const code = await runInit([], deps);
-    expect(code).toBe(0);
-
-    // Settings unchanged
-    const s = readSettings(settingsPath(tmpDir));
-    expect(s.statusLine?.command).toBe('/other/tool render-something');
-
-    // No cache
-    expect(fs.existsSync(cachePath(tmpDir))).toBe(false);
+    expect(fs.readFileSync(cachePath(tmpDir), 'utf8')).not.toContain('refreshToken');
   });
-});
 
-// ---------------------------------------------------------------------------
-// Test 6: Conflict, non-interactive, no --force
-// ---------------------------------------------------------------------------
-
-describe('T6: conflict non-interactive no --force', () => {
-  it('exits with code 2; settings unchanged', async () => {
+  it('does not launch login when initial discovery fails for a reason other than missing credentials', async () => {
     const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-
-    writeJson(settingsPath(tmpDir), {
-      statusLine: { type: 'command', command: '/other/tool render-something' },
-    });
-
-    const deps = baseDeps(tmpDir, { isInteractive: false });
-
-    const { code } = await captureStderr(() => runInit(['--plan=pro'], deps));
-    expect(code).toBe(2);
-
-    // Settings unchanged
-    const s = readSettings(settingsPath(tmpDir));
-    expect(s.statusLine?.command).toBe('/other/tool render-something');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 7: Conflict with --force
-// ---------------------------------------------------------------------------
-
-describe('T7: conflict with --force', () => {
-  it('settings overwritten without prompt; exits 0', async () => {
-    const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-
-    writeJson(settingsPath(tmpDir), {
-      statusLine: { type: 'command', command: '/other/tool render-something' },
-    });
-
-    const deps = baseDeps(tmpDir, { isInteractive: false });
-
-    const code = await runInit(['--plan=pro', '--force'], deps);
-    expect(code).toBe(0);
-
-    // Settings now has our command
-    const s = readSettings(settingsPath(tmpDir));
-    expect(s.statusLine?.command).toMatch(/render-promax/);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 8: Idempotent re-run, Enterprise — cache exists with valid creds, no --force
-// ---------------------------------------------------------------------------
-
-describe('T8: idempotent re-run Enterprise with valid cache', () => {
-  it('macOS spawn NOT invoked; settings re-asserted; exit 0', async () => {
-    const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-
-    // Pre-write a valid cache
-    const validCache = makeValidCache();
-    await writeCache(validCache, cachePath(tmpDir));
-
-    const discoverSpy = vi.fn();
-    const spawnSpy = vi.fn();
-
-    const deps = baseDeps(tmpDir, {
-      discoverImpl: discoverSpy as InitDeps['discoverImpl'],
-      spawnRefresh: spawnSpy,
-    });
-
-    const code = await runInit(['--plan=enterprise'], deps);
-    expect(code).toBe(0);
-
-    // Discover NOT called
-    expect(discoverSpy).not.toHaveBeenCalled();
-    // Spawn NOT called
-    expect(spawnSpy).not.toHaveBeenCalled();
-
-    // Settings has render-enterprise
-    const s = readSettings(settingsPath(tmpDir));
-    expect(s.statusLine?.command).toMatch(/render-enterprise/);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 9: Enterprise validation auth-fatal
-// ---------------------------------------------------------------------------
-
-describe('T9: Enterprise validation auth-fatal', () => {
-  it('mock refresh writes cache with authState=fatal; init prints remediation; exit code 3', async () => {
-    const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-
-    const discoverSpy = vi.fn().mockResolvedValue(MOCK_CREDENTIALS);
-    const spawnSpy = makeSpawnRefresh(tmpDir, { authState: 'fatal', usage: null, lastErrorMessage: 'Token revoked' });
-
-    const deps = baseDeps(tmpDir, {
-      discoverImpl: discoverSpy as InitDeps['discoverImpl'],
-      spawnRefresh: spawnSpy,
-    });
-
-    const { code, output } = await captureStderr(() => runInit(['--plan=enterprise'], deps));
-    expect(code).toBe(3);
-    expect(output).toMatch(/auth-fatal|expired|revoked/i);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 10: Enterprise validation cloudflare-blocked
-// ---------------------------------------------------------------------------
-
-describe('T10: Enterprise validation cloudflare-blocked', () => {
-  it('mock refresh writes cache with authState=cloudflare-blocked; Cloudflare-specific message; exit code 3', async () => {
-    const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-
-    const discoverSpy = vi.fn().mockResolvedValue(MOCK_CREDENTIALS);
-    const spawnSpy = makeSpawnRefresh(tmpDir, { authState: 'cloudflare-blocked', usage: null, lastErrorMessage: 'Cloudflare blocked' });
-
-    const deps = baseDeps(tmpDir, {
-      discoverImpl: discoverSpy as InitDeps['discoverImpl'],
-      spawnRefresh: spawnSpy,
-    });
-
-    const { code, output } = await captureStderr(() => runInit(['--plan=enterprise'], deps));
-    expect(code).toBe(3);
-    expect(output).toMatch(/cloudflare|network|VPN/i);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 11: Enterprise validation transient — usage=null, lastErrorMessage set
-// ---------------------------------------------------------------------------
-
-describe('T11: Enterprise validation transient', () => {
-  it('mock refresh leaves authState=ok but usage=null with lastErrorMessage; exit code 4', async () => {
-    const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-
-    const discoverSpy = vi.fn().mockResolvedValue(MOCK_CREDENTIALS);
-    const spawnSpy = makeSpawnRefresh(tmpDir, {
-      authState: 'ok',
-      usage: null,
-      lastErrorMessage: 'Transient network error',
-    });
-
-    const deps = baseDeps(tmpDir, {
-      discoverImpl: discoverSpy as InitDeps['discoverImpl'],
-      spawnRefresh: spawnSpy,
-    });
-
-    const { code, output } = await captureStdout(() => runInit(['--plan=enterprise'], deps));
-    expect(code).toBe(4);
-    expect(output).toContain('could not contact the usage API; retry later');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 12: CredentialNotFoundError, interactive — prompts for paste
-// ---------------------------------------------------------------------------
-
-import { CredentialNotFoundError } from '../src/credentials/discover';
-
-describe('T12: CredentialNotFoundError interactive paste flow', () => {
-  it('discover throws; user prompted for paste; valid paste proceeds; invalid re-prompts (max 3; 3rd failure exits non-zero)', async () => {
-    const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-
-    const discoverSpy = vi.fn().mockRejectedValue(
-      new CredentialNotFoundError(['macOS keychain', '/fake/.credentials.json']),
-    );
-
-    // First paste is invalid JSON, second is invalid envelope, third is valid
-    const validEnvelopeStr = JSON.stringify(VALID_ENVELOPE);
-    const pasteReader = vi.fn()
-      .mockResolvedValueOnce('not-json-at-all')
-      .mockResolvedValueOnce(JSON.stringify({ claudeAiOauth: {} })) // missing fields
-      .mockResolvedValueOnce(validEnvelopeStr);
-
-    const spawnSpy = makeSpawnRefresh(tmpDir, { usage: MOCK_USAGE });
-
-    const deps = baseDeps(tmpDir, {
-      isInteractive: true,
-      stdinReader: vi.fn().mockResolvedValue('3'), // choose enterprise
-      discoverImpl: discoverSpy as InitDeps['discoverImpl'],
-      pasteReader,
-      spawnRefresh: spawnSpy,
-    });
-
-    const code = await runInit([], deps);
-    // After 3rd attempt (valid), should succeed
-    expect(code).toBe(0);
-    expect(pasteReader).toHaveBeenCalledTimes(3);
-
-    // 3-failure case: all invalid
-    const tmpDir2 = makeTmpDir();
-    makeFakeBundle(tmpDir2);
-    const discoverSpy2 = vi.fn().mockRejectedValue(
-      new CredentialNotFoundError(['macOS keychain', '/fake/.credentials.json']),
-    );
-    const pasteReader2 = vi.fn().mockResolvedValue('not-json-at-all');
-
-    const { code: code2 } = await captureStderr(() =>
-      runInit([], baseDeps(tmpDir2, {
+    await writeCache(makeCache(), cachePath(tmpDir));
+    const before = fileHash(cachePath(tmpDir));
+    const rawError = `malformed credential ${MOCK_CREDENTIALS.accessToken}`;
+    const discoverImpl = vi.fn().mockRejectedValue(new Error(rawError));
+    const spawnClaude = vi.fn();
+    const { code, output } = await captureStderr(() =>
+      runInit(['--plan=enterprise', '--force'], baseDeps(tmpDir, {
         isInteractive: true,
-        stdinReader: vi.fn().mockResolvedValue('3'),
-        discoverImpl: discoverSpy2 as InitDeps['discoverImpl'],
-        pasteReader: pasteReader2,
-        spawnRefresh: vi.fn(),
+        discoverImpl: discoverImpl as InitDeps['discoverImpl'],
+        spawnClaude,
       })),
     );
-    expect(code2).toBe(2);
-    expect(pasteReader2).toHaveBeenCalledTimes(3);
+
+    expect(code).toBe(3);
+    expect(output).toBe('init: could not read Claude Code credentials.\n');
+    expect(output).not.toContain(rawError);
+    expect(spawnClaude).not.toHaveBeenCalled();
+    expect(fileHash(cachePath(tmpDir))).toBe(before);
   });
-});
 
-// ---------------------------------------------------------------------------
-// Test 13: CredentialNotFoundError, non-interactive
-// ---------------------------------------------------------------------------
-
-describe('T13: CredentialNotFoundError non-interactive', () => {
-  it('discover throws; exits non-zero; message includes paths tried', async () => {
+  it.each([
+    ['explicit non-interactive mode', ['--plan=enterprise', '--non-interactive'], true],
+    ['no TTY', ['--plan=enterprise'], false],
+  ])('prints manual commands and runs no Claude commands for %s', async (_label, args, interactive) => {
     const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
+    const discoverImpl = vi.fn().mockRejectedValue(
+      new CredentialNotFoundError(['/mock/credentials.json']),
+    );
+    const spawnClaude = vi.fn();
+    const { code, output } = await captureStderr(() =>
+      runInit(args, baseDeps(tmpDir, {
+        isInteractive: interactive,
+        discoverImpl: discoverImpl as InitDeps['discoverImpl'],
+        spawnClaude,
+      })),
+    );
 
-    const pathsTried = ['macOS keychain', '/home/user/.claude/.credentials.json'];
-    const discoverSpy = vi.fn().mockRejectedValue(new CredentialNotFoundError(pathsTried));
-
-    const deps = baseDeps(tmpDir, {
-      isInteractive: false,
-      discoverImpl: discoverSpy as InitDeps['discoverImpl'],
-    });
-
-    const { code, output } = await captureStderr(() => runInit(['--plan=enterprise'], deps));
     expect(code).toBe(2);
-    expect(output).toContain(pathsTried[0]);
-    expect(output).toContain(pathsTried[1]);
+    expect(output.split('\n')).toContain('claude auth login');
+    expect(output.split('\n')).toContain('npx @nkootstra/cc-statusline --plan enterprise');
+    expect(spawnClaude).not.toHaveBeenCalled();
   });
-});
 
-// ---------------------------------------------------------------------------
-// Test 14: Windows path emission
-// ---------------------------------------------------------------------------
-
-describe('T14: Windows path emission', () => {
-  it('on win32, command is node <absolute>\\cc-statusline.js render-promax; on POSIX, no node prefix', async () => {
-    // Windows
+  it('returns 130 when login is interrupted by SIGINT', async () => {
     const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-    const depsWin = baseDeps(tmpDir, { platformOverride: 'win32', isInteractive: false });
-    await runInit(['--plan=pro'], depsWin);
-    const sWin = readSettings(settingsPath(tmpDir));
-    expect(sWin.statusLine?.command).toMatch(/^node /);
-    expect(sWin.statusLine?.command).toMatch(/render-promax/);
+    const previous = makeCache();
+    await writeCache(previous, cachePath(tmpDir));
+    const before = fileHash(cachePath(tmpDir));
+    const { deps, spawnClaude, discoverImpl } = authRecoveryDeps(
+      tmpDir,
+      { status: 0, signal: null, stdout: '{"loggedIn":false}' },
+      { status: null, signal: 'SIGINT' },
+    );
 
-    // POSIX (linux)
-    const tmpDir2 = makeTmpDir();
-    makeFakeBundle(tmpDir2);
-    const depsLinux = baseDeps(tmpDir2, { platformOverride: 'linux', isInteractive: false });
-    await runInit(['--plan=pro'], depsLinux);
-    const sLinux = readSettings(settingsPath(tmpDir2));
-    expect(sLinux.statusLine?.command).not.toMatch(/^node /);
-    expect(sLinux.statusLine?.command).toMatch(/render-promax/);
+    expect(await runInit(['--plan=enterprise', '--force'], deps)).toBe(130);
+    expect(spawnClaude).toHaveBeenCalledTimes(2);
+    expect(discoverImpl).toHaveBeenCalledOnce();
+    expect(fileHash(cachePath(tmpDir))).toBe(before);
   });
-});
 
-// ---------------------------------------------------------------------------
-// Test 15: Absolute path — no ~ in emitted command
-// ---------------------------------------------------------------------------
-
-describe('T15: absolute path — no tilde', () => {
-  it('emitted statusLine.command starts with resolved homedir, never contains ~', async () => {
-    const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-    const deps = baseDeps(tmpDir, { isInteractive: false });
-
-    await runInit(['--plan=pro'], deps);
-
-    const s = readSettings(settingsPath(tmpDir));
-    const cmd = s.statusLine?.command ?? '';
-    expect(cmd).not.toContain('~/');
-    expect(cmd).not.toContain('~\\');
-    // Should start with the install dir (which is inside tmpDir)
-    expect(path.isAbsolute(cmd.replace(/^node /, ''))).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 16: POSIX file mode — cc-statusline.js is mode 0o755 after copy
-// ---------------------------------------------------------------------------
-
-describe('T16: POSIX file mode', () => {
-  it('on POSIX, cc-statusline.js has mode 0o755 after copy', async () => {
-    if (process.platform === 'win32') return;
-
-    const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-    const deps = baseDeps(tmpDir, { platformOverride: 'linux', isInteractive: false });
-
-    await runInit(['--plan=pro'], deps);
-
-    const mode = fs.statSync(bundlePath(tmpDir)).mode & 0o777;
-    expect(mode).toBe(0o755);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 17: Always re-copy — two invocations; byte-identical after second
-// ---------------------------------------------------------------------------
-
-describe('T17: always re-copy', () => {
-  it('invoke init twice; file at installDir is byte-identical to bundlePathOverride', async () => {
-    const tmpDir = makeTmpDir();
-    const fakeBundle = makeFakeBundle(tmpDir);
-    const deps = baseDeps(tmpDir, { isInteractive: false });
-
-    await runInit(['--plan=pro'], deps);
-
-    // Modify the file at installDir to differ
-    fs.writeFileSync(bundlePath(tmpDir), '// different content\n', 'utf8');
-
-    // Second invocation should re-copy
-    await runInit(['--plan=pro'], deps);
-
-    // Should now be identical to the fake bundle
-    expect(fileHash(bundlePath(tmpDir))).toBe(fileHash(fakeBundle));
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 18: --credentials-path traversal rejection
-// ---------------------------------------------------------------------------
-
-describe('T18: --credentials-path traversal rejection', () => {
-  it('an existing file outside homedir is rejected because it escapes homedir; exit code 2', async () => {
-    const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-    const deps = baseDeps(tmpDir);
-    const outsideFile = path.join(os.tmpdir(), `cc-outside-creds-${Date.now()}.json`);
-    fs.writeFileSync(outsideFile, JSON.stringify(VALID_ENVELOPE), 'utf8');
-
-    try {
-      const { code, output } = await captureStderr(() =>
-        runInit(['--plan=enterprise', `--credentials-path=${outsideFile}`], deps),
+  it.each([
+    ['nonzero exit', { status: 1, signal: null }],
+    ['missing executable', { status: null, signal: null, error: Object.assign(new Error('missing'), { code: 'ENOENT' }) }],
+    ['other signal', { status: null, signal: 'SIGTERM' }],
+  ] satisfies Array<[string, SpawnClaudeResult]>)(
+    'returns auth error for login %s',
+    async (_label, loginResult) => {
+      const tmpDir = makeTmpDir();
+      await writeCache(makeCache(), cachePath(tmpDir));
+      const before = fileHash(cachePath(tmpDir));
+      const { deps, spawnClaude, discoverImpl } = authRecoveryDeps(
+        tmpDir,
+        { status: 0, signal: null, stdout: '{"loggedIn":false}' },
+        loginResult,
       );
-      expect(code).toBe(2);
-      expect(output).toMatch(/outside home|escapes|homedir/i);
-    } finally {
-      fs.rmSync(outsideFile, { force: true });
-    }
+
+      expect(await runInit(['--plan=enterprise', '--force'], deps)).toBe(3);
+      expect(spawnClaude).toHaveBeenCalledTimes(2);
+      expect(discoverImpl).toHaveBeenCalledOnce();
+      expect(fileHash(cachePath(tmpDir))).toBe(before);
+    },
+  );
+
+  it('preserves the previous cache when post-login validation still fails', async () => {
+    const tmpDir = makeTmpDir();
+    await writeCache(makeCache(), cachePath(tmpDir));
+    const before = fileHash(cachePath(tmpDir));
+    const { deps, spawnClaude } = authRecoveryDeps(
+      tmpDir,
+      { status: 0, signal: null, stdout: '{"loggedIn":true}' },
+    );
+    deps.fetchImpl = makeFetch(401);
+
+    expect(await runInit(['--plan=enterprise', '--force'], deps)).toBe(3);
+    expect(spawnClaude).toHaveBeenCalledTimes(2);
+    expect(fileHash(cachePath(tmpDir))).toBe(before);
   });
+
+  it.each([
+    [
+      'credentials remain missing',
+      new CredentialNotFoundError(['/mock/credentials.json']),
+    ],
+    [
+      'credential source cannot be read',
+      new Error(`malformed credential ${MOCK_CREDENTIALS.accessToken}`),
+    ],
+  ])(
+    'returns a stable error and preserves the previous cache when post-login %s',
+    async (_label, rediscoveryError) => {
+      const tmpDir = makeTmpDir();
+      await writeCache(makeCache(), cachePath(tmpDir));
+      const before = fileHash(cachePath(tmpDir));
+      const discoverImpl = vi.fn()
+        .mockRejectedValueOnce(new CredentialNotFoundError(['/mock/credentials.json']))
+        .mockRejectedValueOnce(rediscoveryError);
+      const spawnClaude = vi.fn((
+        _command: string,
+        argv: readonly string[],
+        _options: Parameters<NonNullable<InitDeps['spawnClaude']>>[2],
+      ) => argv[1] === 'status'
+        ? { status: 1, signal: null, stdout: '{"loggedIn":false}' }
+        : { status: 0, signal: null });
+      const { code, output } = await captureStderr(() =>
+        runInit(['--plan=enterprise', '--force'], baseDeps(tmpDir, {
+          isInteractive: true,
+          discoverImpl: discoverImpl as InitDeps['discoverImpl'],
+          spawnClaude,
+        })),
+      );
+
+      expect(code).toBe(3);
+      expect(output).toBe(
+        'init: Claude Code credentials were not available after login.\n',
+      );
+      expect(output).not.toContain(MOCK_CREDENTIALS.accessToken);
+      expect(spawnClaude).toHaveBeenCalledTimes(2);
+      expect(discoverImpl).toHaveBeenCalledTimes(2);
+      expect(fileHash(cachePath(tmpDir))).toBe(before);
+    },
+  );
 });
 
-// ---------------------------------------------------------------------------
-// Test 19: --credentials-path symlink-out rejection
-// ---------------------------------------------------------------------------
-
-describe('T19: --credentials-path symlink-out rejection', () => {
-  it('symlink in tmpDir pointing to /etc/passwd is rejected via realpath', async () => {
-    if (process.platform === 'win32') return; // symlinks are tricky on Windows
-
+describe('credential validation and cache persistence', () => {
+  it('uses a valid unexpired v4 cache without discovery, auth commands, or network', async () => {
     const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
+    await writeCache(makeCache(), cachePath(tmpDir));
+    const discoverImpl = vi.fn();
+    const spawnClaude = vi.fn();
+    const fetchImpl = makeFetch();
 
-    // Create symlink in tmpDir pointing outside
-    const symlinkPath = path.join(tmpDir, 'evil-link.json');
-    try {
-      fs.symlinkSync('/etc/passwd', symlinkPath);
-    } catch {
-      // Skip if we can't create symlinks
-      return;
-    }
+    expect(await runInit(['--plan=enterprise'], baseDeps(tmpDir, {
+      discoverImpl: discoverImpl as InitDeps['discoverImpl'],
+      spawnClaude,
+      fetchImpl,
+    }))).toBe(0);
+    expect(discoverImpl).not.toHaveBeenCalled();
+    expect(spawnClaude).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 
-    const deps = baseDeps(tmpDir);
+  it('validates a direct automatic candidate without auth commands', async () => {
+    const tmpDir = makeTmpDir();
+    const discoverImpl = vi.fn().mockResolvedValue(MOCK_CREDENTIALS);
+    const spawnClaude = vi.fn();
+    const fetchImpl = makeFetch();
+
+    expect(await runInit(['--plan=enterprise'], baseDeps(tmpDir, {
+      discoverImpl: discoverImpl as InitDeps['discoverImpl'],
+      spawnClaude,
+      fetchImpl,
+    }))).toBe(0);
+    expect(discoverImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(spawnClaude).not.toHaveBeenCalled();
+
+    const cache = readCache(cachePath(tmpDir));
+    expect(cache).toMatchObject({
+      schemaVersion: 4,
+      authState: 'ok',
+      credentials: {
+        accessToken: MOCK_CREDENTIALS.accessToken,
+        expiresAt: MOCK_CREDENTIALS.expiresAt,
+      },
+      credentialSource: { kind: 'claude-code' },
+      usage: MOCK_USAGE,
+      lastUsageRefreshAt: NOW,
+      lastRefreshStartedAt: 0,
+      lastErrorMessage: null,
+      rateLimitedUntilMs: 0,
+      nextRefreshAllowedAt: 0,
+      consecutiveRateLimitCount: 0,
+    });
+    expect(fs.readFileSync(cachePath(tmpDir), 'utf8')).not.toContain('refreshToken');
+  });
+
+  it('an explicit path bypasses a valid cache, stores its canonical source, and never runs auth commands', async () => {
+    const tmpDir = makeTmpDir();
+    await writeCache(makeCache(), cachePath(tmpDir));
+    const credentialsFile = path.join(tmpDir, '.claude', 'credentials.json');
+    writeJson(credentialsFile, { claudeAiOauth: MOCK_CREDENTIALS });
+    const discoverImpl = vi.fn();
+    const spawnClaude = vi.fn();
+    const fetchImpl = makeFetch();
+
+    expect(await runInit([
+      '--plan=enterprise',
+      `--credentials-path=${credentialsFile}`,
+    ], baseDeps(tmpDir, {
+      discoverImpl: discoverImpl as InitDeps['discoverImpl'],
+      spawnClaude,
+      fetchImpl,
+    }))).toBe(0);
+    expect(discoverImpl).not.toHaveBeenCalled();
+    expect(spawnClaude).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(readCache(cachePath(tmpDir))?.credentialSource).toEqual({
+      kind: 'file',
+      path: fs.realpathSync(credentialsFile),
+    });
+  });
+
+  it.each([
+    ['expired credentials', 'expired', 3],
+    ['usage 401', 401, 3],
+    ['usage 403', 403, 4],
+    ['usage 429', 429, 4],
+    ['usage 500', 500, 4],
+    ['network timeout', 'timeout', 4],
+  ])('classifies explicit-path %s and preserves the previous cache', async (_label, outcome, expectedCode) => {
+    const tmpDir = makeTmpDir();
+    await writeCache(makeCache(), cachePath(tmpDir));
+    const before = fileHash(cachePath(tmpDir));
+    const credentialsFile = path.join(tmpDir, '.claude', 'credentials.json');
+    const credentials = outcome === 'expired'
+      ? { ...MOCK_CREDENTIALS, expiresAt: NOW }
+      : MOCK_CREDENTIALS;
+    writeJson(credentialsFile, { claudeAiOauth: credentials });
+    const spawnClaude = vi.fn();
+    const fetchImpl = outcome === 'timeout'
+      ? makeThrowingFetch()
+      : makeFetch(typeof outcome === 'number' ? outcome : 200);
+
+    expect(await runInit([
+      '--plan=enterprise',
+      `--credentials-path=${credentialsFile}`,
+    ], baseDeps(tmpDir, { spawnClaude, fetchImpl }))).toBe(expectedCode);
+    expect(spawnClaude).not.toHaveBeenCalled();
+    expect(fileHash(cachePath(tmpDir))).toBe(before);
+  });
+
+  it.each([403, 429, 500])(
+    'treats automatic usage %i as network failure without launching login',
+    async (status) => {
+      const tmpDir = makeTmpDir();
+      await writeCache(makeCache(), cachePath(tmpDir));
+      const before = fileHash(cachePath(tmpDir));
+      const spawnClaude = vi.fn();
+
+      expect(await runInit(['--plan=enterprise', '--force'], baseDeps(tmpDir, {
+        fetchImpl: makeFetch(status),
+        spawnClaude,
+      }))).toBe(4);
+      expect(spawnClaude).not.toHaveBeenCalled();
+      expect(fileHash(cachePath(tmpDir))).toBe(before);
+    },
+  );
+
+  it('treats malformed automatic usage JSON as a retryable network failure', async () => {
+    const tmpDir = makeTmpDir();
+    await writeCache(makeCache(), cachePath(tmpDir));
+    const before = fileHash(cachePath(tmpDir));
+    const spawnClaude = vi.fn();
+    const fetchImpl = vi.fn(async () =>
+      new Response('not-json', { status: 200 }),
+    ) as unknown as typeof fetch;
 
     const { code, output } = await captureStderr(() =>
-      runInit(['--plan=enterprise', `--credentials-path=${symlinkPath}`], deps),
+      runInit(['--plan=enterprise', '--force'], baseDeps(tmpDir, {
+        fetchImpl,
+        spawnClaude,
+      })),
     );
-    expect(code).toBe(2);
-    expect(output).toMatch(/outside home|escapes|homedir/i);
+
+    expect(code).toBe(4);
+    expect(output).toBe('init: could not contact the usage API; retry later.\n');
+    expect(spawnClaude).not.toHaveBeenCalled();
+    expect(fileHash(cachePath(tmpDir))).toBe(before);
   });
 });
 
-// ---------------------------------------------------------------------------
-// Test 20: --credentials-path special-file rejection
-// ---------------------------------------------------------------------------
-
-describe('T20: --credentials-path special-file rejection', () => {
-  it('/dev/zero is rejected (not a regular file); exit code 2', async () => {
-    if (process.platform === 'win32') return; // no /dev/zero on Windows
-
+describe('settings, platform, and installer regressions', () => {
+  it('leaves a conflicting setting unchanged when the interactive user declines', async () => {
     const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-    const deps = baseDeps(tmpDir);
-
-    const { code, output } = await captureStderr(() =>
-      runInit(['--plan=enterprise', '--credentials-path=/dev/zero'], deps),
-    );
-    expect(code).toBe(2);
-    // Either "outside home" (realpath shows it's not under homedir) OR "not a regular file"
-    expect(output).toMatch(/outside home|not a regular file|escapes|homedir/i);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 21: Paste no-echo — pasted bytes do NOT appear in stdout
-// ---------------------------------------------------------------------------
-
-describe('T21: paste no-echo', () => {
-  it('captured stdout during paste prompt does not contain pasted bytes', async () => {
-    const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-
-    const SECRET = 'my-secret-paste-content-xyz';
-
-    const discoverSpy = vi.fn().mockRejectedValue(
-      new CredentialNotFoundError(['keychain']),
-    );
-    const pasteReader = vi.fn().mockResolvedValueOnce(JSON.stringify(VALID_ENVELOPE));
-
-    const spawnSpy = makeSpawnRefresh(tmpDir, { usage: MOCK_USAGE });
-
-    const deps = baseDeps(tmpDir, {
-      isInteractive: true,
-      stdinReader: vi.fn().mockResolvedValue('3'),
-      discoverImpl: discoverSpy as InitDeps['discoverImpl'],
-      pasteReader,
-      spawnRefresh: spawnSpy,
-    });
-
-    const { output } = await captureStdout(() => runInit([], deps));
-
-    // The secret paste string should not appear in stdout
-    expect(output).not.toContain(SECRET);
-    // The pasted JSON envelope string should not appear in stdout either
-    expect(output).not.toContain(VALID_ENVELOPE.claudeAiOauth.accessToken);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 22: Initial cache shape — all 6 fields explicit
-// ---------------------------------------------------------------------------
-
-describe('T22: initial cache shape', () => {
-  it('written initial cache has all six Cache fields; readCache returns fully-typed object', async () => {
-    const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-
-    const discoverSpy = vi.fn().mockResolvedValue(MOCK_CREDENTIALS);
-    // Spawn writes a valid cache with usage
-    const spawnSpy = makeSpawnRefresh(tmpDir, { usage: MOCK_USAGE });
-
-    const deps = baseDeps(tmpDir, {
-      discoverImpl: discoverSpy as InitDeps['discoverImpl'],
-      spawnRefresh: spawnSpy,
-    });
-
-    // We need to read the cache BEFORE the spawn mock overwrites it, so we
-    // intercept the spawnRefresh to capture the initial cache.
-    let initialCacheSnapshot: Cache | null = null;
-    const captureSpawn: InitDeps['spawnRefresh'] = vi.fn((_args, _opts) => {
-      // Capture the cache written before spawn
-      initialCacheSnapshot = readCache(cachePath(tmpDir));
-      // Then do what makeSpawnRefresh would do
-      const cFile = cachePath(tmpDir);
-      const cache = makeValidCache({ usage: MOCK_USAGE });
-      fs.mkdirSync(path.dirname(cFile), { recursive: true, mode: 0o700 });
-      fs.writeFileSync(cFile, JSON.stringify(cache, null, 2) + '\n', 'utf8');
-      return { status: 0 };
-    });
-
-    const code = await runInit(['--plan=enterprise'], {
-      ...deps,
-      spawnRefresh: captureSpawn,
-    });
-    expect(code).toBe(0);
-
-    // Initial cache (before spawn) must have all expected fields
-    expect(initialCacheSnapshot).not.toBeNull();
-    const c = initialCacheSnapshot!;
-    expect(c.schemaVersion).toBe(3);
-    expect(c.authState).toBe('ok');
-    expect(c.credentials).toBeDefined();
-    expect(c.usage).toBeNull();
-    expect(c.lastUsageRefreshAt).toBe(0);
-    expect(c.lastRefreshStartedAt).toBe(0);
-    expect(c.lastErrorMessage).toBeNull();
-    expect(c.rateLimitedUntilMs).toBe(0);
-
-    // None are undefined
-    const fields: (keyof Cache)[] = [
-      'schemaVersion', 'authState', 'credentials', 'usage',
-      'lastUsageRefreshAt', 'lastRefreshStartedAt', 'lastErrorMessage',
-      'rateLimitedUntilMs', 'nextRefreshAllowedAt', 'consecutiveRateLimitCount',
-    ];
-    for (const field of fields) {
-      expect(c[field]).not.toBeUndefined();
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 23: --force unified — bypasses both conflict prompt AND idempotent skip
-// ---------------------------------------------------------------------------
-
-describe('T23: --force unified', () => {
-  it('with --force, settings conflict and idempotent-skip are both bypassed; destructive paths fire', async () => {
-    const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-
-    // Existing conflicting settings
     writeJson(settingsPath(tmpDir), {
-      statusLine: { type: 'command', command: '/other/tool render-something' },
+      statusLine: { type: 'command', command: '/other/statusline' },
     });
+    const before = fileHash(settingsPath(tmpDir));
 
-    // Existing valid cache (would normally cause idempotent skip)
-    const validCache = makeValidCache();
-    await writeCache(validCache, cachePath(tmpDir));
-
-    const discoverSpy = vi.fn().mockResolvedValue(MOCK_CREDENTIALS);
-    const spawnSpy = makeSpawnRefresh(tmpDir, { usage: MOCK_USAGE });
-
-    const deps = baseDeps(tmpDir, {
-      discoverImpl: discoverSpy as InitDeps['discoverImpl'],
-      spawnRefresh: spawnSpy,
-    });
-
-    const code = await runInit(['--plan=enterprise', '--force'], deps);
-    expect(code).toBe(0);
-
-    // Settings was overwritten
-    const s = readSettings(settingsPath(tmpDir));
-    expect(s.statusLine?.command).toMatch(/render-enterprise/);
-    expect(s.statusLine?.command).not.toBe('/other/tool render-something');
-
-    // Discover was called (idempotent skip was bypassed)
-    expect(discoverSpy).toHaveBeenCalled();
-    // Spawn was called (idempotent skip was bypassed)
-    expect(spawnSpy).toHaveBeenCalled();
+    expect(await runInit([], baseDeps(tmpDir, {
+      isInteractive: true,
+      stdinReader: vi.fn()
+        .mockResolvedValueOnce('1')
+        .mockResolvedValueOnce('n'),
+    }))).toBe(0);
+    expect(fileHash(settingsPath(tmpDir))).toBe(before);
+    expect(fs.existsSync(bundlePath(tmpDir))).toBe(false);
   });
-});
 
-// ---------------------------------------------------------------------------
-// Test 24: Always Allow banner — macOS vs Linux/Windows
-// ---------------------------------------------------------------------------
-
-describe('T24: Always Allow banner macOS vs Linux', () => {
-  it('on darwin Enterprise flow, banner is printed before discover; on linux, banner NOT printed', async () => {
-    // macOS
+  it('does not activate Enterprise installation when authentication fails', async () => {
     const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
+    writeJson(settingsPath(tmpDir), {
+      statusLine: { type: 'command', command: '/other/statusline' },
+    });
+    fs.mkdirSync(path.dirname(bundlePath(tmpDir)), { recursive: true });
+    fs.writeFileSync(bundlePath(tmpDir), 'previous bundle\n', 'utf8');
+    const settingsBefore = fileHash(settingsPath(tmpDir));
+    const bundleBefore = fileHash(bundlePath(tmpDir));
+    const { deps } = authRecoveryDeps(
+      tmpDir,
+      { status: 0, signal: null, stdout: '{"loggedIn":false}' },
+      { status: 1, signal: null },
+    );
 
-    const discoverSpy = vi.fn().mockResolvedValue(MOCK_CREDENTIALS);
-    const spawnSpy = makeSpawnRefresh(tmpDir, { usage: MOCK_USAGE });
-    const capturedMessages: string[] = [];
-    const originalDiscoverSpy = vi.fn(async (..._args: unknown[]) => {
-      // Record the stdout so far at the time discover is called
-      capturedMessages.push(...stdoutSoFar);
-      return MOCK_CREDENTIALS;
+    expect(await runInit(['--plan=enterprise', '--force'], deps)).toBe(3);
+    expect(fileHash(settingsPath(tmpDir))).toBe(settingsBefore);
+    expect(fileHash(bundlePath(tmpDir))).toBe(bundleBefore);
+    expect(fs.existsSync(cachePath(tmpDir))).toBe(false);
+  });
+
+  it('rejects a settings conflict without interaction and lets --force overwrite it', async () => {
+    const tmpDir = makeTmpDir();
+    writeJson(settingsPath(tmpDir), {
+      statusLine: { type: 'command', command: '/other/statusline' },
     });
 
-    let stdoutSoFar: string[] = [];
-    const origWrite = process.stdout.write.bind(process.stdout) as typeof process.stdout.write;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (process.stdout as any).write = (chunk: string | Uint8Array, ...rest: unknown[]) => {
-      stdoutSoFar.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
-      return (origWrite as (c: string | Uint8Array, ...a: unknown[]) => boolean)(chunk, ...rest);
-    };
+    expect(await runInit(['--plan=pro'], baseDeps(tmpDir))).toBe(2);
+    expect(readSettings(settingsPath(tmpDir)).statusLine?.command).toBe('/other/statusline');
+    expect(await runInit(['--plan=pro', '--force'], baseDeps(tmpDir))).toBe(0);
+    expect(readSettings(settingsPath(tmpDir)).statusLine?.command).toContain('render-promax');
+  });
 
-    try {
-      const deps = baseDeps(tmpDir, {
-        platformOverride: 'darwin',
-        discoverImpl: originalDiscoverSpy as InitDeps['discoverImpl'],
-        spawnRefresh: spawnSpy,
-      });
-      const code = await runInit(['--plan=enterprise'], deps);
-      expect(code).toBe(0);
-    } finally {
-      process.stdout.write = origWrite;
-    }
+  it('emits platform-specific absolute commands and makes POSIX bundles executable', async () => {
+    const windowsDir = makeTmpDir();
+    expect(await runInit(['--plan=pro'], baseDeps(windowsDir, {
+      platformOverride: 'win32',
+    }))).toBe(0);
+    const windowsCommand = readSettings(settingsPath(windowsDir)).statusLine?.command;
+    expect(windowsCommand).toBe(`node ${bundlePath(windowsDir)} render-promax`);
+    expect(windowsCommand).not.toContain('~');
 
-    const allOutput = stdoutSoFar.join('');
-    expect(allOutput).toContain('Always Allow');
+    const posixDir = makeTmpDir();
+    expect(await runInit(['--plan=pro'], baseDeps(posixDir))).toBe(0);
+    expect(readSettings(settingsPath(posixDir)).statusLine?.command)
+      .toBe(`${bundlePath(posixDir)} render-promax`);
+    expect(fs.statSync(bundlePath(posixDir)).mode & 0o777).toBe(0o755);
+  });
 
-    // Linux — no banner
-    const tmpDir2 = makeTmpDir();
-    makeFakeBundle(tmpDir2);
-    const discoverSpy2 = vi.fn().mockResolvedValue(MOCK_CREDENTIALS);
-    const spawnSpy2 = makeSpawnRefresh(tmpDir2, { usage: MOCK_USAGE });
+  it('always recopies the bundle and logs the installed version', async () => {
+    const tmpDir = makeTmpDir();
+    const source = makeFakeBundle(tmpDir, 'first\n');
+    const deps = baseDeps(tmpDir, { bundlePathOverride: source });
 
+    expect(await runInit(['--plan=pro'], deps)).toBe(0);
+    fs.writeFileSync(source, 'second\n', 'utf8');
+    const { code, output } = await captureStdout(() => runInit(['--plan=pro'], deps));
+    expect(code).toBe(0);
+    expect(fs.readFileSync(bundlePath(tmpDir), 'utf8')).toBe('second\n');
+    expect(output).toMatch(/installed cc-statusline v1\.2\.3/);
+  });
+
+  it('prints the macOS keychain note only for automatic Enterprise discovery', async () => {
+    const macDir = makeTmpDir();
+    const { output: macOutput } = await captureStdout(() =>
+      runInit(['--plan=enterprise'], baseDeps(macDir, { platformOverride: 'darwin' })),
+    );
+    expect(macOutput).toContain('Always Allow');
+
+    const linuxDir = makeTmpDir();
     const { output: linuxOutput } = await captureStdout(() =>
-      runInit(
-        ['--plan=enterprise'],
-        baseDeps(tmpDir2, {
-          platformOverride: 'linux',
-          discoverImpl: discoverSpy2 as InitDeps['discoverImpl'],
-          spawnRefresh: spawnSpy2,
-        }),
-      ),
+      runInit(['--plan=enterprise'], baseDeps(linuxDir)),
     );
     expect(linuxOutput).not.toContain('Always Allow');
   });
 });
 
-// ---------------------------------------------------------------------------
-// Test 25: Version log
-// ---------------------------------------------------------------------------
+describe('explicit credential path security', () => {
+  it('does not print malformed credential contents', async () => {
+    const home = makeTmpDir();
+    const credentialsFile = path.join(home, 'credentials.json');
+    const leakedToken = 'sk-ant-must-not-appear';
+    fs.writeFileSync(
+      credentialsFile,
+      `{"claudeAiOauth":{"accessToken":"${leakedToken}"`,
+      'utf8',
+    );
 
-describe('T25: version log', () => {
-  it("init's stdout includes a line matching /^installed cc-statusline v\\d+\\.\\d+\\.\\d+/", async () => {
-    const tmpDir = makeTmpDir();
-    makeFakeBundle(tmpDir);
-    const deps = baseDeps(tmpDir, {
-      versionString: '1.2.3',
-      isInteractive: false,
-    });
+    const { code, output } = await captureStderr(() =>
+      runInit([
+        '--plan=enterprise',
+        `--credentials-path=${credentialsFile}`,
+      ], baseDeps(home)),
+    );
 
-    const { output } = await captureStdout(() => runInit(['--plan=pro'], deps));
-    expect(output).toMatch(/installed cc-statusline v\d+\.\d+\.\d+/);
-    expect(output).toContain('installed cc-statusline v1.2.3');
+    expect(code).toBe(2);
+    expect(output).toContain('could not read credentials from --credentials-path');
+    expect(output).not.toContain(leakedToken);
+  });
+
+  it('rejects a path outside the home directory', async () => {
+    const home = makeTmpDir();
+    const outside = makeTmpDir();
+    const credentialsFile = path.join(outside, 'credentials.json');
+    writeJson(credentialsFile, { claudeAiOauth: MOCK_CREDENTIALS });
+
+    const { code, output } = await captureStderr(() =>
+      runInit([
+        '--plan=enterprise',
+        `--credentials-path=${credentialsFile}`,
+      ], baseDeps(home)),
+    );
+    expect(code).toBe(2);
+    expect(output).toContain('outside home directory');
+  });
+
+  it('rejects a symlink that resolves outside the home directory', async () => {
+    const home = makeTmpDir();
+    const outside = makeTmpDir();
+    const target = path.join(outside, 'credentials.json');
+    const symlink = path.join(home, 'credentials.json');
+    writeJson(target, { claudeAiOauth: MOCK_CREDENTIALS });
+    fs.symlinkSync(target, symlink);
+
+    const { code } = await captureStderr(() =>
+      runInit([
+        '--plan=enterprise',
+        `--credentials-path=${symlink}`,
+      ], baseDeps(home)),
+    );
+    expect(code).toBe(2);
+  });
+
+  it.runIf(process.platform !== 'win32')('rejects a non-regular file', async () => {
+    const home = makeTmpDir();
+    const directory = path.join(home, 'credentials');
+    fs.mkdirSync(directory);
+
+    const { code, output } = await captureStderr(() =>
+      runInit([
+        '--plan=enterprise',
+        `--credentials-path=${directory}`,
+      ], baseDeps(home)),
+    );
+    expect(code).toBe(2);
+    expect(output).toContain('not a regular file');
   });
 });

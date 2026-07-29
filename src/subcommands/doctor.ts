@@ -3,6 +3,10 @@ import {
   defaultDiagnosticLogPath,
   readDiagnosticLog,
 } from '../diagnostics/logger';
+import {
+  rateLimitCooldownRemainingMs,
+  refreshCooldownRemainingMs,
+} from './enterprise-refresh-policy';
 
 export interface DoctorDeps {
   cachePath?: string;
@@ -37,26 +41,31 @@ export async function runDoctor(
 
   if (cache === null) {
     lines.push('cache:         absent or unreadable');
-    lines.push('credential use: unavailable (cache absent)');
-    lines.push('credential origin: not recorded');
+    lines.push('credential source: unavailable (cache absent)');
     lines.push(`diagnostics:   ${logPath}`);
     if (showLogs) {
       const log = await readDiagnosticLog(logPath);
       if (log.length > 0) lines.push('', log.trimEnd());
     }
     lines.push('');
-    lines.push('Re-run `npx @nkootstra/cc-statusline --plan <pro|max|enterprise>` to install.');
+    lines.push('run init to create the cache');
     process.stdout.write(lines.join('\n') + '\n');
     return 0;
   }
 
   const nowMs = now();
-  const cooldownUntilMs = Math.max(cache.rateLimitedUntilMs, cache.nextRefreshAllowedAt);
+  const cooldownRemainingMs = refreshCooldownRemainingMs(cache, nowMs);
+  const rateLimitRemainingMs = rateLimitCooldownRemainingMs(cache, nowMs);
 
   lines.push(`cache:         present (schemaVersion ${cache.schemaVersion})`);
   lines.push(`authState:     ${cache.authState}`);
-  lines.push('credential use: local cache (cache.json)');
-  lines.push('credential origin: not recorded');
+  lines.push(
+    `credential source: ${
+      cache.credentialSource.kind === 'claude-code'
+        ? 'Claude Code'
+        : 'explicit file'
+    }`,
+  );
 
   const lastUsageLabel =
     cache.lastUsageRefreshAt === 0
@@ -65,10 +74,15 @@ export async function runDoctor(
   lines.push(`last usage:    ${lastUsageLabel}`);
 
   const cooldownLabel =
-    cooldownUntilMs > nowMs
-      ? `cooling down ${formatRelativeMs(cooldownUntilMs - nowMs)}`
+    rateLimitRemainingMs > 0
+      ? `cooling down ${formatRelativeMs(rateLimitRemainingMs)}`
       : 'not rate-limited';
   lines.push(`rate limit:    ${cooldownLabel}`);
+  if (cooldownRemainingMs > 0 && rateLimitRemainingMs === 0) {
+    lines.push(
+      `refresh retry: cooling down ${formatRelativeMs(cooldownRemainingMs)}`,
+    );
+  }
 
   lines.push(`refresh:       ${isRefreshInFlight(cache, nowMs) ? 'in flight' : 'idle'}`);
 

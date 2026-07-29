@@ -15,13 +15,13 @@ function cachePathOf(dir: string): string {
 
 function makeCache(overrides: Partial<Cache> = {}): Cache {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     authState: 'ok',
     credentials: {
       accessToken: 'sk-ant-secret-do-not-leak',
-      refreshToken: 'rt-secret-do-not-leak',
       expiresAt: Date.now() + 3_600_000,
     },
+    credentialSource: { kind: 'claude-code' },
     usage: null,
     lastUsageRefreshAt: 0,
     lastRefreshStartedAt: 0,
@@ -65,7 +65,21 @@ describe('runDoctor', () => {
     expect(exitCode).toBe(0);
     const output = captured.join('');
     expect(output).toContain('absent');
-    expect(output).toContain('--plan');
+    expect(output).toContain('run init');
+  });
+
+  it('treats malformed v4 JSON as an absent cache', async () => {
+    const cachePath = cachePathOf(tmpDir);
+    fs.writeFileSync(
+      cachePath,
+      JSON.stringify({ schemaVersion: 4 }),
+      'utf8',
+    );
+
+    expect(await runDoctor([], { cachePath })).toBe(0);
+    const output = captured.join('');
+    expect(output).toContain('absent or unreadable');
+    expect(output).toContain('run init');
   });
 
   it('cache present: surfaces authState, last usage, rate-limit status', async () => {
@@ -87,8 +101,21 @@ describe('runDoctor', () => {
     expect(output).toContain('authState:     ok');
     expect(output).toContain('last usage:    30s ago');
     expect(output).toContain('rate limit:    not rate-limited');
-    expect(output).toContain('credential use: local cache (cache.json)');
-    expect(output).toContain('credential origin: not recorded');
+    expect(output).toContain('credential source: Claude Code');
+  });
+
+  it('reports an explicit-file source without exposing its path', async () => {
+    const sourcePath = path.join(tmpDir, 'secret', 'credentials.json');
+    const cache = makeCache({
+      credentialSource: { kind: 'file', path: sourcePath },
+    });
+    await writeCache(cache, cachePathOf(tmpDir));
+
+    await runDoctor([], { cachePath: cachePathOf(tmpDir) });
+    const output = captured.join('');
+
+    expect(output).toContain('credential source: explicit file');
+    expect(output).not.toContain(sourcePath);
   });
 
   it('cooldown active: shows cooldown remaining', async () => {
@@ -104,7 +131,7 @@ describe('runDoctor', () => {
     expect(output).toMatch(/in \d+m/);
   });
 
-  it('does NOT leak access or refresh token in output', async () => {
+  it('does NOT leak the access token in output', async () => {
     const now = Date.now();
     const cache = makeCache({
       lastErrorMessage: 'some error from earlier',
@@ -114,7 +141,6 @@ describe('runDoctor', () => {
     await runDoctor([], { cachePath: cachePathOf(tmpDir), now: () => now });
     const output = captured.join('');
     expect(output).not.toContain('sk-ant-secret-do-not-leak');
-    expect(output).not.toContain('rt-secret-do-not-leak');
   });
 
   it('surfaces lastErrorMessage when set', async () => {
@@ -159,6 +185,5 @@ describe('runDoctor', () => {
     expect(output).toContain('usage.response');
     expect(output).toContain('"status":429');
     expect(output).not.toContain('sk-ant-secret-do-not-leak');
-    expect(output).not.toContain('rt-secret-do-not-leak');
   });
 });

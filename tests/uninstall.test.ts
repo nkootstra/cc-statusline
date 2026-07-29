@@ -76,13 +76,13 @@ function writeRenderer(dir: string): void {
 
 async function writeTestCache(dir: string): Promise<void> {
   const cache: Cache = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     authState: 'ok',
     credentials: {
       accessToken: 'sk-ant-test',
-      refreshToken: 'rt-test',
       expiresAt: Date.now() + 3_600_000,
     },
+    credentialSource: { kind: 'claude-code' },
     usage: {
       five_hour: { utilization: 0.1, resetsAt: '2026-05-03T12:00:00Z' },
       seven_day: { utilization: 0.2, resetsAt: '2026-05-10T00:00:00Z' },
