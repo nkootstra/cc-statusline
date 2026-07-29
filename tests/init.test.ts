@@ -705,7 +705,7 @@ describe('settings, platform, and installer regressions', () => {
     expect(readSettings(settingsPath(tmpDir)).statusLine?.command).toContain('render-promax');
   });
 
-  it('emits platform-specific absolute commands and makes POSIX bundles executable', async () => {
+  it('emits an absolute node command on Windows', async () => {
     const windowsDir = makeTmpDir();
     expect(await runInit(['--plan=pro'], baseDeps(windowsDir, {
       platformOverride: 'win32',
@@ -714,7 +714,9 @@ describe('settings, platform, and installer regressions', () => {
     const windowsBundlePath = bundlePath(windowsDir);
     expect(path.isAbsolute(windowsBundlePath)).toBe(true);
     expect(windowsCommand).toBe(`node ${windowsBundlePath} render-promax`);
+  });
 
+  it.runIf(process.platform !== 'win32')('makes POSIX bundles executable', async () => {
     const posixDir = makeTmpDir();
     expect(await runInit(['--plan=pro'], baseDeps(posixDir))).toBe(0);
     expect(readSettings(settingsPath(posixDir)).statusLine?.command)
