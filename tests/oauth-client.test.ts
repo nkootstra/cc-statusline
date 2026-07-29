@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { refresh, fetchUsage } from '../src/oauth/client';
+import { describe, it, expect, vi } from 'vitest';
+import { fetchUsage } from '../src/oauth/client';
 import usageFixture from './fixtures/usage-response.json';
 
 // AE7 deferred: the disabled-case shape (extra_usage.is_enabled === false) is unverified
@@ -20,165 +20,6 @@ function makeResponse(
   return new Response(bodyStr, { status, headers: headersObj });
 }
 
-describe('refresh', () => {
-  it('happy path: returns success with expiresAt in ms', async () => {
-    const before = Date.now();
-    const mockFetch = vi.fn().mockResolvedValue(
-      makeResponse(200, {
-        access_token: 'new-access',
-        refresh_token: 'new-refresh',
-        expires_in: 3600,
-      }),
-    );
-
-    const result = await refresh('old-refresh-token', mockFetch);
-
-    expect(result.kind).toBe('success');
-    if (result.kind !== 'success') return;
-    expect(result.data.accessToken).toBe('new-access');
-    expect(result.data.refreshToken).toBe('new-refresh');
-    // expiresAt must be ~3,600,000 ms from now — NOT 3600 (seconds)
-    const delta = result.data.expiresAt - before;
-    expect(delta).toBeGreaterThanOrEqual(3_600_000 - 100);
-    expect(delta).toBeLessThanOrEqual(3_600_000 + 100);
-  });
-
-  it('sends form-urlencoded body with correct Content-Type', async () => {
-    let capturedInit: RequestInit | undefined;
-    const mockFetch = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
-      capturedInit = init;
-      return Promise.resolve(
-        makeResponse(200, {
-          access_token: 'a',
-          refresh_token: 'r',
-          expires_in: 3600,
-        }),
-      );
-    });
-
-    await refresh('my-refresh-token', mockFetch);
-
-    expect(capturedInit).toBeDefined();
-    const headers = capturedInit!.headers as Record<string, string>;
-    expect(headers['Content-Type']).toBe('application/x-www-form-urlencoded');
-    expect(headers['Content-Type']).not.toContain('application/json');
-
-    const body = capturedInit!.body as string;
-    expect(typeof body).toBe('string');
-    expect(body).toMatch(/grant_type=refresh_token&refresh_token=[^&]+&client_id=9d1c250a-/);
-  });
-
-  it('401 -> auth-fatal', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(makeResponse(401, ''));
-    const result = await refresh('token', mockFetch);
-    expect(result.kind).toBe('auth-fatal');
-    if (result.kind !== 'auth-fatal') return;
-    expect(result.reason).toBe('401');
-  });
-
-  it('400 with invalid_grant body -> auth-fatal', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(
-      makeResponse(400, JSON.stringify({ error: 'invalid_grant' })),
-    );
-    const result = await refresh('token', mockFetch);
-    expect(result.kind).toBe('auth-fatal');
-    if (result.kind !== 'auth-fatal') return;
-    expect(result.reason).toBe('invalid_grant');
-  });
-
-  it('403 -> cloudflare-blocked', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(makeResponse(403, ''));
-    const result = await refresh('token', mockFetch);
-    expect(result.kind).toBe('cloudflare-blocked');
-    if (result.kind !== 'cloudflare-blocked') return;
-    expect(result.status).toBe(403);
-  });
-
-  it('429 with Retry-After header -> rate-limited with that value, retryAfterPresent: true', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(
-      makeResponse(429, '', { 'Retry-After': '60' }),
-    );
-    const result = await refresh('token', mockFetch);
-    expect(result.kind).toBe('rate-limited');
-    if (result.kind !== 'rate-limited') return;
-    expect(result.retryAfterSeconds).toBe(60);
-    expect(result.retryAfterPresent).toBe(true);
-    expect(result.xShouldRetry).toBeNull();
-  });
-
-  it('429 without Retry-After header -> defaults to 60s, retryAfterPresent: false', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(makeResponse(429, ''));
-    const result = await refresh('token', mockFetch);
-    expect(result.kind).toBe('rate-limited');
-    if (result.kind !== 'rate-limited') return;
-    expect(result.retryAfterSeconds).toBe(60);
-    expect(result.retryAfterPresent).toBe(false);
-  });
-
-  it('429 with garbage Retry-After -> defaults to 60s, retryAfterPresent: false', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(
-      makeResponse(429, '', { 'Retry-After': 'not-a-number' }),
-    );
-    const result = await refresh('token', mockFetch);
-    expect(result.kind).toBe('rate-limited');
-    if (result.kind !== 'rate-limited') return;
-    expect(result.retryAfterSeconds).toBe(60);
-    expect(result.retryAfterPresent).toBe(false);
-  });
-
-  it('429 with x-should-retry: false -> xShouldRetry: false', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(
-      makeResponse(429, '', { 'Retry-After': '30', 'x-should-retry': 'false' }),
-    );
-    const result = await refresh('token', mockFetch);
-    expect(result.kind).toBe('rate-limited');
-    if (result.kind !== 'rate-limited') return;
-    expect(result.xShouldRetry).toBe(false);
-  });
-
-  it('500 -> transient with status 500', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(makeResponse(500, 'Internal Server Error'));
-    const result = await refresh('token', mockFetch);
-    expect(result.kind).toBe('transient');
-    if (result.kind !== 'transient') return;
-    expect(result.status).toBe(500);
-  });
-
-  it('network error (fetch throws) -> transient with status 0', async () => {
-    const mockFetch = vi.fn().mockRejectedValue(new Error('Network failure'));
-    const result = await refresh('token', mockFetch);
-    expect(result.kind).toBe('transient');
-    if (result.kind !== 'transient') return;
-    expect(result.status).toBe(0);
-    expect(result.message).toBe('Network failure');
-  });
-
-  it('timeout (AbortController fires) -> transient', async () => {
-    vi.useFakeTimers();
-    const mockFetch = vi.fn().mockImplementation(
-      (_url: string, init: RequestInit) =>
-        new Promise<Response>((_resolve, reject) => {
-          const signal = init.signal;
-          if (signal) {
-            signal.addEventListener('abort', () =>
-              reject(new DOMException('The operation was aborted.', 'AbortError')),
-            );
-          }
-        }),
-    );
-
-    const resultPromise = refresh('token', mockFetch);
-    vi.advanceTimersByTime(10_001);
-    const result = await resultPromise;
-
-    vi.useRealTimers();
-
-    expect(result.kind).toBe('transient');
-    if (result.kind !== 'transient') return;
-    expect(result.status).toBe(0);
-  });
-});
-
 describe('fetchUsage', () => {
   it('happy path: returns success with parsed usage data', async () => {
     const mockFetch = vi.fn().mockResolvedValue(
@@ -194,6 +35,39 @@ describe('fetchUsage', () => {
     expect(result.data.extra_usage?.is_enabled).toBe(true);
     expect(result.data.extra_usage?.used_credits).toBe(78000);
     expect(result.data.extra_usage?.monthly_limit).toBe(100000);
+  });
+
+  it('malformed 200 response -> transient without exposing parse details', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(
+      makeResponse(200, 'not-json'),
+    );
+
+    const result = await fetchUsage('access-token-abc', mockFetch);
+
+    expect(result).toEqual({
+      kind: 'transient',
+      status: 200,
+      message: 'Invalid response from usage endpoint',
+    });
+  });
+
+  it.each([
+    ['non-object payload', []],
+    ['invalid usage bucket', { five_hour: { utilization: '42' } }],
+    ['invalid reset timestamp', {
+      seven_day: { utilization: 67, resets_at: 123 },
+    }],
+    ['invalid extra usage', { extra_usage: { is_enabled: 'yes' } }],
+  ])('invalid 200 %s -> transient', async (_description, body) => {
+    const mockFetch = vi.fn().mockResolvedValue(makeResponse(200, body));
+
+    const result = await fetchUsage('access-token-abc', mockFetch);
+
+    expect(result).toEqual({
+      kind: 'transient',
+      status: 200,
+      message: 'Invalid response from usage endpoint',
+    });
   });
 
   it('sends Authorization and anthropic-beta headers', async () => {
@@ -307,5 +181,48 @@ describe('fetchUsage', () => {
     expect(result.kind).toBe('transient');
     if (result.kind !== 'transient') return;
     expect(result.status).toBe(0);
+  });
+
+  it('keeps the timeout active while reading the response body', async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    let resolveBody: ((value: unknown) => void) | undefined;
+    const body = new Promise<unknown>((resolve, reject) => {
+      resolveBody = resolve;
+      const rejectOnAbort = () => {
+        reject(new DOMException('The operation was aborted.', 'AbortError'));
+      };
+      queueMicrotask(() => {
+        if (signal?.aborted) {
+          rejectOnAbort();
+        } else {
+          signal?.addEventListener('abort', rejectOnAbort, { once: true });
+        }
+      });
+    });
+    const mockFetch = vi.fn().mockImplementation(
+      (_url: string, init: RequestInit) => {
+        signal = init.signal ?? undefined;
+        return Promise.resolve({
+          status: 200,
+          headers: new Headers(),
+          json: () => body,
+        } as Response);
+      },
+    );
+
+    const resultPromise = fetchUsage('token', mockFetch);
+    await vi.advanceTimersByTimeAsync(10_001);
+    const wasAborted = signal?.aborted;
+    resolveBody?.(usageFixture);
+    const result = await resultPromise;
+    vi.useRealTimers();
+
+    expect(wasAborted).toBe(true);
+    expect(result).toEqual({
+      kind: 'transient',
+      status: 200,
+      message: 'Invalid response from usage endpoint',
+    });
   });
 });

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
 const BUNDLE = resolve(__dirname, '..', 'dist', 'cli.cjs');
+const CLI_SOURCE = resolve(__dirname, '..', 'src', 'cli.ts');
 
 describe('build smoke', () => {
   beforeAll(() => {
@@ -47,6 +48,19 @@ describe('build smoke', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Usage:');
     expect(result.stdout).toContain('Pro and Max use the same renderer');
+    expect(result.stdout.match(/--non-interactive/g)).toHaveLength(2);
+    expect(result.stdout).toContain('background credential + usage refresh');
+    expect(result.stdout).not.toContain('background token + usage refresh');
+  });
+
+  it('source help documents non-interactive init and background credential refresh', () => {
+    const source = readFileSync(CLI_SOURCE, 'utf8');
+    const help = source.match(/const HELP = `([\s\S]*?)`;/)?.[1];
+
+    expect(help).toBeDefined();
+    expect(help?.match(/--non-interactive/g)).toHaveLength(2);
+    expect(help).toContain('background credential + usage refresh');
+    expect(help).not.toContain('background token + usage refresh');
   });
 
   it('prints the package version on --version', () => {

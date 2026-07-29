@@ -1,9 +1,3 @@
-export interface OAuthCredentials {
-  accessToken: string;
-  refreshToken: string;
-  expiresAt: number; // epoch ms
-}
-
 export interface UsageBucket {
   utilization: number; // 0 .. 100
   resets_at?: string;  // ISO 8601 from the OAuth API
@@ -30,13 +24,6 @@ export interface RateLimitDiagnostics {
   retryAfterPresent: boolean;
   xShouldRetry: boolean | null;
 }
-
-export type RefreshResult =
-  | { kind: 'success'; data: OAuthCredentials }
-  | { kind: 'auth-fatal'; reason: string }
-  | { kind: 'cloudflare-blocked'; status: number }
-  | ({ kind: 'rate-limited' } & RateLimitDiagnostics)
-  | { kind: 'transient'; status: number; message: string };
 
 export type FetchUsageResult =
   | { kind: 'success'; data: UsageResponse }

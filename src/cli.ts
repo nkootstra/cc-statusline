@@ -19,12 +19,12 @@ const PKG_VERSION: string = ((): string => {
 const HELP = `cc-statusline — usage-aware Claude Code statusline + installer
 
 Usage:
-  cc-statusline [--plan pro|max|enterprise] [--credentials-path=<path>] [--force]
-  cc-statusline init [--plan pro|max|enterprise] [--credentials-path=<path>] [--force]
+  cc-statusline [--plan pro|max|enterprise] [--credentials-path=<path>] [--non-interactive] [--force]
+  cc-statusline init [--plan pro|max|enterprise] [--credentials-path=<path>] [--non-interactive] [--force]
   cc-statusline uninstall
   cc-statusline render-promax       (invoked by Claude Code; reads stdin)
   cc-statusline render-enterprise   (invoked by Claude Code; reads stdin)
-  cc-statusline refresh             (background token + usage refresh)
+  cc-statusline refresh             (background credential + usage refresh)
   cc-statusline doctor [--logs]     (print cache diagnostics; no credentials)
   cc-statusline --version           (print the installed version)
 

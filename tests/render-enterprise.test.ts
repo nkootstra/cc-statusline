@@ -5,121 +5,12 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { Readable } from 'node:stream';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { SpawnOptions } from 'node:child_process';
-
-const FIXTURES = resolve(__dirname, 'fixtures');
-
-function loadFixture(name: string): string {
-  return readFileSync(resolve(FIXTURES, name), 'utf8');
-}
-
-function makeStream(content: string): Readable {
-  return Readable.from([content]);
-}
-
-// ---------------------------------------------------------------------------
-// Shared cache fixture helpers
-// ---------------------------------------------------------------------------
-
 import type { Cache } from '../src/cache/store';
 import type { UsageResponse } from '../src/oauth/types';
-
-const BASE_CREDENTIALS = {
-  accessToken: 'tok',
-  refreshToken: 'ref',
-  expiresAt: Date.now() + 3600_000,
-};
-
-const GOLDEN_STDIN = JSON.stringify({
-  session_id: 'golden',
-  transcript_path: '/t',
-  cwd: '/c',
-  model: { id: 'claude-opus-4-7', display_name: 'Opus 4.7' },
-  workspace: { current_dir: '/c', project_dir: '/c' },
-  version: '1',
-  output_style: { name: 'default' },
-  cost: {
-    total_cost_usd: 0,
-    total_duration_ms: 0,
-    total_api_duration_ms: 0,
-    total_lines_added: 0,
-    total_lines_removed: 0,
-  },
-  exceeds_200k_tokens: false,
-  context_window: { used_percentage: null },
-});
-
-function makeCache(overrides: Partial<Cache> = {}): Cache {
-  return {
-    schemaVersion: 3,
-    authState: 'ok',
-    credentials: BASE_CREDENTIALS,
-    usage: null,
-    lastUsageRefreshAt: 0,
-    lastRefreshStartedAt: 0,
-    lastErrorMessage: null,
-    rateLimitedUntilMs: 0,
-    nextRefreshAllowedAt: 0,
-    consecutiveRateLimitCount: 0,
-    ...overrides,
-  };
-}
-
-/** Builds a Cache with the full usage-response.json fixture usage. */
-function makeCacheWithUsage(
-  usageOverrides: Partial<UsageResponse> = {},
-  cacheOverrides: Partial<Cache> = {},
-): Cache {
-  const baseUsage = JSON.parse(loadFixture('usage-response.json')) as UsageResponse;
-  const usage: UsageResponse = { ...baseUsage, ...usageOverrides };
-  return makeCache({ usage, ...cacheOverrides });
-}
-
-// ---------------------------------------------------------------------------
-// stdout capture helper
-// ---------------------------------------------------------------------------
-
-function captureStdout(fn: () => Promise<number>): Promise<{ output: string; exitCode: number }> {
-  return new Promise(async (resolve, reject) => {
-    const chunks: string[] = [];
-
-    const spy = vi
-      .spyOn(process.stdout, 'write')
-      .mockImplementation((chunk: unknown, ...rest: unknown[]) => {
-        void rest;
-        if (typeof chunk === 'string') {
-          chunks.push(chunk);
-        } else if (Buffer.isBuffer(chunk)) {
-          chunks.push(chunk.toString('utf8'));
-        }
-        return true;
-      });
-
-    try {
-      const exitCode = await fn();
-      spy.mockRestore();
-      resolve({ output: chunks.join(''), exitCode });
-    } catch (err) {
-      spy.mockRestore();
-      reject(err);
-    }
-  });
-}
-
-// ---------------------------------------------------------------------------
-// TTY helpers
-// ---------------------------------------------------------------------------
-
-function setTTY(value: boolean | undefined): void {
-  Object.defineProperty(process.stdout, 'isTTY', {
-    value,
-    writable: true,
-    configurable: true,
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Import the function under test
@@ -128,12 +19,21 @@ function setTTY(value: boolean | undefined): void {
 import {
   runRenderEnterprise,
   AUTH_FATAL_HINT,
+  MISSING_CACHE_HINT,
   CLOUDFLARE_HINT,
-  RATE_LIMITED_HINT_PREFIX,
 } from '../src/subcommands/render-enterprise';
 import { STALE_MARKER, MISSING } from '../src/statusline/format';
 import * as storeModule from '../src/cache/store';
-import type { DiagnosticLogger } from '../src/diagnostics/logger';
+import {
+  captureStdout,
+  GOLDEN_STDIN,
+  loadFixture,
+  makeCache,
+  makeCacheWithUsage,
+  makeStream,
+  runWithCache,
+  setTTY,
+} from './support/render-enterprise';
 
 // ---------------------------------------------------------------------------
 // Global setup / teardown
@@ -148,42 +48,6 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
-
-// Helper that runs runRenderEnterprise with a given cache injected via spy
-async function runWithCache(
-  cache: Cache | null,
-  stdinContent: string,
-  extra: {
-    now?: () => number;
-    logger?: DiagnosticLogger;
-    spawnCalls?: Array<{ command: string; args: string[]; opts: SpawnOptions }>;
-  } = {},
-): Promise<{ output: string; exitCode: number; spawnCalls: Array<{ command: string; args: string[]; opts: SpawnOptions }> }> {
-  const calls: Array<{ command: string; args: string[]; opts: SpawnOptions }> = [];
-  const readCacheSpy = vi.spyOn(storeModule, 'readCache').mockReturnValue(cache);
-
-  try {
-    const { output, exitCode } = await captureStdout(() =>
-      runRenderEnterprise(
-        [],
-        makeStream(stdinContent),
-        {
-          cachePath: '/mocked',
-          bundlePath: '/bundle.js',
-          now: extra.now ?? (() => Date.now()),
-          logger: extra.logger ?? { log: async () => {} },
-          spawnRefresh: (command, args, opts) => {
-            calls.push({ command, args, opts });
-            if (extra.spawnCalls) extra.spawnCalls.push({ command, args, opts });
-          },
-        },
-      ),
-    );
-    return { output, exitCode, spawnCalls: calls };
-  } finally {
-    readCacheSpy.mockRestore();
-  }
-}
 
 describe('golden Enterprise output', () => {
   beforeEach(() => {
@@ -237,10 +101,11 @@ describe('golden Enterprise output', () => {
     expect(output).toBe('Opus 4.7 · 5h 42% [17:22] · 7d 81% [Tue 16:22]\n');
   });
 
-  it('renders exact fetching line', async () => {
-    const { output } = await runWithCache(null, GOLDEN_STDIN);
+  it('renders exact missing-cache repair line', async () => {
+    const { output, spawnCalls } = await runWithCache(null, GOLDEN_STDIN);
 
-    expect(output).toBe('Opus 4.7 · usage — · fetching…\n');
+    expect(output).toBe('Opus 4.7 · usage — · run init\n');
+    expect(spawnCalls).toHaveLength(0);
   });
 });
 
@@ -488,16 +353,17 @@ describe('Scenario 4 (AE3): authState=fatal — dimmed figures + remediation hin
   });
 
   it('auth-fatal hint is at most 50 chars', () => {
+    expect(AUTH_FATAL_HINT).toBe(' run init to repair auth');
     expect(AUTH_FATAL_HINT.trim().length).toBeLessThanOrEqual(50);
   });
 
-  it('does NOT spawn a refresh subprocess when authState=fatal', async () => {
+  it('throttles fatal-auth recovery for five minutes', async () => {
     const NOW = Date.now();
     const cache = makeCacheWithUsage({}, {
       authState: 'fatal',
-      lastUsageRefreshAt: 0, // stale, would normally trigger spawn
+      lastUsageRefreshAt: NOW - 30_000,
+      lastRefreshStartedAt: NOW - 2 * 60_000,
     });
-
     const { spawnCalls } = await runWithCache(
       cache,
       loadFixture('stdin-enterprise.json'),
@@ -506,14 +372,76 @@ describe('Scenario 4 (AE3): authState=fatal — dimmed figures + remediation hin
 
     expect(spawnCalls).toHaveLength(0);
   });
+
+  it('spawns background recovery immediately when fatal auth has never retried', async () => {
+    const NOW = 100;
+    const cache = makeCacheWithUsage({}, {
+      authState: 'fatal',
+      lastUsageRefreshAt: NOW - 30_000,
+      lastRefreshStartedAt: 0,
+    });
+    const { spawnCalls } = await runWithCache(
+      cache,
+      loadFixture('stdin-enterprise.json'),
+      {
+        now: () => NOW,
+      },
+    );
+
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('spawns fatal-auth recovery again after five minutes', async () => {
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage({}, {
+      authState: 'fatal',
+      lastUsageRefreshAt: NOW - 30_000,
+      lastRefreshStartedAt: NOW - 5 * 60_000,
+    });
+
+    const { spawnCalls } = await runWithCache(
+      cache,
+      loadFixture('stdin-enterprise.json'),
+      { now: () => NOW },
+    );
+
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('honors in-flight and rate-limit guards during fatal-auth recovery', async () => {
+    const NOW = Date.now();
+    const inFlight = makeCacheWithUsage({}, {
+      authState: 'fatal',
+      lastRefreshStartedAt: NOW - 500,
+    });
+    const coolingDown = makeCacheWithUsage({}, {
+      authState: 'fatal',
+      lastRefreshStartedAt: 0,
+      rateLimitedUntilMs: NOW + 60_000,
+    });
+
+    const first = await runWithCache(
+      inFlight,
+      loadFixture('stdin-enterprise.json'),
+      { now: () => NOW },
+    );
+    const second = await runWithCache(
+      coolingDown,
+      loadFixture('stdin-enterprise.json'),
+      { now: () => NOW },
+    );
+
+    expect(first.spawnCalls).toHaveLength(0);
+    expect(second.spawnCalls).toHaveLength(0);
+  });
 });
 
 // ============================================================================
-// Scenario 5: Cache missing — output includes usage — + fetching…; spawn called
+// Scenario 5: Cache missing — output includes an actionable init hint
 // ============================================================================
 
 describe('Scenario 5: cache missing (null)', () => {
-  it('renders "usage —" and "fetching…" on first render', async () => {
+  it('renders "usage —" and the init hint without spawning refresh', async () => {
     const { output, exitCode, spawnCalls } = await runWithCache(
       null,
       loadFixture('stdin-enterprise.json'),
@@ -521,9 +449,9 @@ describe('Scenario 5: cache missing (null)', () => {
 
     expect(exitCode).toBe(0);
     expect(output).toContain(`usage ${MISSING}`);
-    expect(output).toContain('fetching…');
-    // Spawn IS called
-    expect(spawnCalls).toHaveLength(1);
+    expect(output).toContain(MISSING_CACHE_HINT);
+    expect(output).not.toContain('fetching…');
+    expect(spawnCalls).toHaveLength(0);
   });
 });
 
@@ -532,16 +460,39 @@ describe('Scenario 5: cache missing (null)', () => {
 // ============================================================================
 
 describe('Scenario 6: cache malformed — readCache returns null', () => {
-  it('renders "usage —" and "fetching…"; spawn called', async () => {
-    // readCache returns null for malformed content — we simulate by passing null.
-    const { output, spawnCalls } = await runWithCache(
-      null,
-      loadFixture('stdin-enterprise.json'),
-    );
+  it('renders the init hint without spawning refresh for malformed v4 JSON', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'cc-statusline-render-malformed-'));
+    const cachePath = join(tmpDir, 'cache.json');
+    const spawnCalls: Array<{
+      command: string;
+      args: string[];
+      opts: SpawnOptions;
+    }> = [];
+    writeFileSync(cachePath, JSON.stringify({ schemaVersion: 4 }), 'utf8');
 
-    expect(output).toContain(`usage ${MISSING}`);
-    expect(output).toContain('fetching…');
-    expect(spawnCalls).toHaveLength(1);
+    try {
+      const { output, exitCode } = await captureStdout(() =>
+        runRenderEnterprise(
+          [],
+          makeStream(loadFixture('stdin-enterprise.json')),
+          {
+            cachePath,
+            bundlePath: '/bundle.js',
+            spawnRefresh: (command, args, opts) => {
+              spawnCalls.push({ command, args, opts });
+            },
+          },
+        ),
+      );
+
+      expect(exitCode).toBe(0);
+      expect(output).toContain(`usage ${MISSING}`);
+      expect(output).toContain(MISSING_CACHE_HINT);
+      expect(output).not.toContain('fetching…');
+      expect(spawnCalls).toHaveLength(0);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -607,122 +558,6 @@ describe('Scenario 8: stdin missing entirely — silent fail', () => {
     readCacheSpy.mockRestore();
     expect(exitCode).toBe(0);
     expect(output).toBe('\n');
-  });
-});
-
-// ============================================================================
-// Scenario 9 (R14): Stale beyond 15min — dim + STALE_MARKER + spawn called
-// ============================================================================
-
-describe('Scenario 9 (R14): stale beyond 15min — dim + STALE_MARKER + spawn', () => {
-  it('appends STALE_MARKER and fires spawn when cache is 20min old', async () => {
-    const NOW = Date.now();
-    const cache = makeCacheWithUsage({}, {
-      lastUsageRefreshAt: NOW - 20 * 60 * 1000, // 20 min ago
-    });
-
-    const { output, spawnCalls } = await runWithCache(
-      cache,
-      loadFixture('stdin-enterprise.json'),
-      { now: () => NOW },
-    );
-
-    expect(output).toContain(STALE_MARKER);
-    expect(spawnCalls).toHaveLength(1);
-  });
-});
-
-// ============================================================================
-// Scenario 10: In-flight refresh — render proceeds; NO new spawn
-// ============================================================================
-
-describe('Scenario 10: refresh already in-flight — no new spawn', () => {
-  it('does not spawn when lastRefreshStartedAt is 500ms ago', async () => {
-    const NOW = Date.now();
-    const cache = makeCacheWithUsage({}, {
-      lastUsageRefreshAt: NOW - 20 * 60 * 1000, // stale — would normally trigger spawn
-      lastRefreshStartedAt: NOW - 500, // in-flight (within 1s dedup window)
-    });
-
-    const { spawnCalls } = await runWithCache(
-      cache,
-      loadFixture('stdin-enterprise.json'),
-      { now: () => NOW },
-    );
-
-    expect(spawnCalls).toHaveLength(0);
-  });
-});
-
-describe('diagnostic refresh decisions', () => {
-  it('records a stale-cache spawn decision without changing rendered output', async () => {
-    const NOW = Date.now();
-    const cache = makeCacheWithUsage({}, {
-      lastUsageRefreshAt: NOW - 5 * 60 * 1000,
-    });
-    const events: Array<Record<string, unknown>> = [];
-
-    const { output, spawnCalls } = await runWithCache(
-      cache,
-      loadFixture('stdin-enterprise.json'),
-      {
-        now: () => NOW,
-        logger: {
-          log: async (details) => {
-            events.push(details);
-          },
-        },
-      },
-    );
-
-    expect(spawnCalls).toHaveLength(1);
-    expect(output).toContain(STALE_MARKER);
-    expect(events).toContainEqual(expect.objectContaining({
-      event: 'render.refresh_decision',
-      action: 'spawn',
-      reason: 'stale-cache',
-    }));
-  });
-});
-
-// ============================================================================
-// Scenario 11 (R15): Synchronous bound — returns within 30ms even when spawn needed
-// ============================================================================
-
-describe('Scenario 11 (R15): synchronous performance bound', () => {
-  it('returns within 30ms even when spawn is triggered', async () => {
-    const NOW = Date.now();
-    const cache = null; // forces spawn
-
-    const readCacheSpy = vi.spyOn(storeModule, 'readCache').mockReturnValue(cache);
-    let spawnCalled = false;
-
-    const start = performance.now();
-
-    const { exitCode } = await captureStdout(() =>
-      runRenderEnterprise(
-        [],
-        makeStream(loadFixture('stdin-enterprise.json')),
-        {
-          cachePath: '/mocked',
-          bundlePath: '/bundle.js',
-          now: () => NOW,
-          logger: { log: async () => {} },
-          // Simulate async work in spawn — but runRenderEnterprise must not await it.
-          spawnRefresh: (_command, _args, _opts) => {
-            spawnCalled = true;
-            // Simulated slow subprocess — we don't await this, so timing is unaffected.
-          },
-        },
-      ),
-    );
-
-    const elapsed = performance.now() - start;
-    readCacheSpy.mockRestore();
-
-    expect(exitCode).toBe(0);
-    expect(spawnCalled).toBe(true);
-    expect(elapsed).toBeLessThan(30);
   });
 });
 
@@ -847,8 +682,8 @@ describe('Scenario 14: authState=cloudflare-blocked — normal figures + cloudfl
 // Scenario 15: First-render UX then second render with populated cache
 // ============================================================================
 
-describe('Scenario 15: first-render UX → second render without fetching…', () => {
-  it('first render includes fetching…; second render (populated cache) omits it', async () => {
+describe('Scenario 15: init-required UX → populated cache', () => {
+  it('first render requests init; second render shows populated usage', async () => {
     const NOW = Date.now();
 
     // First render: no cache.
@@ -858,8 +693,9 @@ describe('Scenario 15: first-render UX → second render without fetching…', (
       { now: () => NOW },
     );
 
-    expect(firstOutput).toContain('fetching…');
-    expect(firstSpawns).toHaveLength(1);
+    expect(firstOutput).toContain(MISSING_CACHE_HINT);
+    expect(firstOutput).not.toContain('fetching…');
+    expect(firstSpawns).toHaveLength(0);
 
     // Second render: cache now populated.
     const populatedCache = makeCacheWithUsage({}, {
@@ -925,250 +761,6 @@ describe('Scenario 17: global.fetch is never called', () => {
 
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
-  });
-});
-
-// ============================================================================
-// Scenario 18: No file writes from render path
-// ----------------------------------------------------------------------------
-// The render path provably never calls a write API: src/subcommands/
-// render-enterprise.ts imports nothing that can write to disk (no fs writes,
-// no writeCache). vi.spyOn on node:fs's default exports fails with "Cannot
-// redefine property" under CJS, so the structural guarantee at the import
-// graph stands in for a spy assertion here.
-// ============================================================================
-
-// ============================================================================
-// Scenario 19: Windows vs POSIX spawn shape
-// ============================================================================
-
-describe('Scenario 19: spawn shape differs by platform', () => {
-  it('on POSIX: calls spawnRefresh(process.execPath, [bundlePath, "refresh"], { detached: true })', async () => {
-    const NOW = Date.now();
-    const cache = null; // triggers spawn
-
-    const readCacheSpy = vi.spyOn(storeModule, 'readCache').mockReturnValue(cache);
-    const capturedCalls: Array<{ command: string; args: string[]; opts: SpawnOptions }> = [];
-
-    // Ensure platform is POSIX
-    const origPlatform = process.platform;
-    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-
-    try {
-      await captureStdout(() =>
-        runRenderEnterprise(
-          [],
-          makeStream(loadFixture('stdin-enterprise.json')),
-          {
-            cachePath: '/mocked',
-            bundlePath: '/my/bundle.js',
-            now: () => NOW,
-            logger: { log: async () => {} },
-            spawnRefresh: (command, args, opts) => capturedCalls.push({ command, args, opts }),
-          },
-        ),
-      );
-    } finally {
-      Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });
-      readCacheSpy.mockRestore();
-    }
-
-    expect(capturedCalls).toHaveLength(1);
-    const call = capturedCalls[0]!;
-    expect(call.command).toBe(process.execPath);
-    expect(call.args).toEqual(['/my/bundle.js', 'refresh']);
-    expect(call.opts.detached).toBe(true);
-    expect(call.opts.stdio).toBe('ignore');
-  });
-
-  it('on win32: calls spawnRefresh("cmd.exe", ["/c", "start", "/b", "/min", execPath, bundlePath, "refresh"])', async () => {
-    const NOW = Date.now();
-    const cache = null; // triggers spawn
-
-    const readCacheSpy = vi.spyOn(storeModule, 'readCache').mockReturnValue(cache);
-    const capturedCalls: Array<{ command: string; args: string[]; opts: SpawnOptions }> = [];
-
-    const origPlatform = process.platform;
-    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-
-    try {
-      await captureStdout(() =>
-        runRenderEnterprise(
-          [],
-          makeStream(loadFixture('stdin-enterprise.json')),
-          {
-            cachePath: '/mocked',
-            bundlePath: 'C:\\bundle.js',
-            now: () => NOW,
-            logger: { log: async () => {} },
-            spawnRefresh: (command, args, opts) => capturedCalls.push({ command, args, opts }),
-          },
-        ),
-      );
-    } finally {
-      Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });
-      readCacheSpy.mockRestore();
-    }
-
-    expect(capturedCalls).toHaveLength(1);
-    const call = capturedCalls[0]!;
-    expect(call.command).toBe('cmd.exe');
-    expect(call.args).toEqual(['/c', 'start', '/b', '/min', process.execPath, 'C:\\bundle.js', 'refresh']);
-    expect(call.opts.stdio).toBe('ignore');
-  });
-});
-
-// ============================================================================
-// Scenario 20: Minimal env — no secrets leaked into spawn env
-// ============================================================================
-
-describe('Scenario 20: minimal env — no secrets passed to spawn', () => {
-  it('spawn env does NOT contain AWS_SECRET_ACCESS_KEY', async () => {
-    const NOW = Date.now();
-    const cache = null; // triggers spawn
-
-    // Set a sensitive env var
-    process.env['AWS_SECRET_ACCESS_KEY'] = 'super-secret-key';
-
-    const readCacheSpy = vi.spyOn(storeModule, 'readCache').mockReturnValue(cache);
-    const capturedCalls: Array<{ command: string; args: string[]; opts: SpawnOptions }> = [];
-
-    try {
-      await captureStdout(() =>
-        runRenderEnterprise(
-          [],
-          makeStream(loadFixture('stdin-enterprise.json')),
-          {
-            cachePath: '/mocked',
-            bundlePath: '/bundle.js',
-            now: () => NOW,
-            logger: { log: async () => {} },
-            spawnRefresh: (command, args, opts) => capturedCalls.push({ command, args, opts }),
-          },
-        ),
-      );
-    } finally {
-      delete process.env['AWS_SECRET_ACCESS_KEY'];
-      readCacheSpy.mockRestore();
-    }
-
-    expect(capturedCalls).toHaveLength(1);
-    const env = capturedCalls[0]!.opts.env as NodeJS.ProcessEnv | undefined;
-    expect(env).toBeDefined();
-    expect(env?.['AWS_SECRET_ACCESS_KEY']).toBeUndefined();
-  });
-
-  it('spawn env contains only PATH, HOME/USERPROFILE, and CLAUDE_CONFIG_DIR', async () => {
-    const NOW = Date.now();
-    const cache = null;
-
-    process.env['CLAUDE_CONFIG_DIR'] = '/my/claude';
-    const readCacheSpy = vi.spyOn(storeModule, 'readCache').mockReturnValue(cache);
-    const capturedCalls: Array<{ command: string; args: string[]; opts: SpawnOptions }> = [];
-
-    try {
-      await captureStdout(() =>
-        runRenderEnterprise(
-          [],
-          makeStream(loadFixture('stdin-enterprise.json')),
-          {
-            cachePath: '/mocked',
-            bundlePath: '/bundle.js',
-            now: () => NOW,
-            logger: { log: async () => {} },
-            spawnRefresh: (command, args, opts) => capturedCalls.push({ command, args, opts }),
-          },
-        ),
-      );
-    } finally {
-      delete process.env['CLAUDE_CONFIG_DIR'];
-      readCacheSpy.mockRestore();
-    }
-
-    expect(capturedCalls).toHaveLength(1);
-    const env = capturedCalls[0]!.opts.env as NodeJS.ProcessEnv;
-    const keys = Object.keys(env);
-    const allowedKeys = new Set(['PATH', 'HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR']);
-
-    for (const key of keys) {
-      expect(allowedKeys.has(key)).toBe(true);
-    }
-
-    expect(env['CLAUDE_CONFIG_DIR']).toBe('/my/claude');
-  });
-});
-
-// ============================================================================
-// Scenario 21: 60-second stale threshold (new behaviour)
-// ============================================================================
-
-describe('Scenario 21: stale threshold is 60 seconds', () => {
-  it('cache 61s old triggers spawn and STALE_MARKER', async () => {
-    vi.stubEnv('NO_COLOR', '1');
-    const NOW = Date.now();
-    const cache = makeCacheWithUsage({}, {
-      lastUsageRefreshAt: NOW - 61 * 1000, // 61 s ago — just past threshold
-    });
-
-    const { output, spawnCalls } = await runWithCache(
-      cache,
-      loadFixture('stdin-enterprise.json'),
-      { now: () => NOW },
-    );
-
-    expect(spawnCalls).toHaveLength(1);
-    expect(output).toContain(STALE_MARKER);
-  });
-
-  it('cache 59s old does NOT spawn and has no STALE_MARKER', async () => {
-    vi.stubEnv('NO_COLOR', '1');
-    const NOW = Date.now();
-    const cache = makeCacheWithUsage({}, {
-      lastUsageRefreshAt: NOW - 59 * 1000, // 59 s ago — within threshold
-    });
-
-    const { output, spawnCalls } = await runWithCache(
-      cache,
-      loadFixture('stdin-enterprise.json'),
-      { now: () => NOW },
-    );
-
-    expect(spawnCalls).toHaveLength(0);
-    expect(output).not.toContain(STALE_MARKER);
-  });
-
-  it('honors CC_STATUSLINE_ENTERPRISE_STALE_MS override', async () => {
-    vi.stubEnv('CC_STATUSLINE_ENTERPRISE_STALE_MS', '30');
-    vi.stubEnv('NO_COLOR', '1');
-    const NOW = Date.now();
-    const cache = makeCacheWithUsage({}, {
-      lastUsageRefreshAt: NOW - 31 * 1000,
-    });
-
-    const { spawnCalls } = await runWithCache(
-      cache,
-      loadFixture('stdin-enterprise.json'),
-      { now: () => NOW },
-    );
-
-    expect(spawnCalls).toHaveLength(1);
-  });
-
-  it('clamps stale-threshold env to minimum (10s)', async () => {
-    vi.stubEnv('CC_STATUSLINE_ENTERPRISE_STALE_MS', '1000');
-    vi.stubEnv('NO_COLOR', '1');
-    const NOW = Date.now();
-    const cache = makeCacheWithUsage({}, {
-      lastUsageRefreshAt: NOW - 11 * 1000,
-    });
-
-    const { spawnCalls } = await runWithCache(
-      cache,
-      loadFixture('stdin-enterprise.json'),
-      { now: () => NOW },
-    );
-
-    expect(spawnCalls).toHaveLength(1);
   });
 });
 
@@ -1323,120 +915,5 @@ describe('Scenario 22: Enterprise credits and session cost stay source-separated
 
     expect(output).toContain('credits $9.19 / $1000.00 (1%) ~ · session $16.00');
     expect(output).not.toContain('session $16.00 ~');
-  });
-});
-
-// ============================================================================
-// Scenario 23: rate-limit cooldown — no spawn fired, hint appended
-// ============================================================================
-
-describe('Scenario 23: rate-limit cooldown — no spawn, hint appended', () => {
-  it('does NOT spawn refresh when rateLimitedUntilMs is in the future', async () => {
-    vi.stubEnv('NO_COLOR', '1');
-    const NOW = Date.now();
-    const cache = makeCacheWithUsage({}, {
-      lastUsageRefreshAt: NOW - 5 * 60 * 1000, // stale — would normally trigger spawn
-      rateLimitedUntilMs: NOW + 4 * 60 * 1000, // 4 min of cooldown remaining
-    });
-
-    const { spawnCalls } = await runWithCache(
-      cache,
-      loadFixture('stdin-enterprise.json'),
-      { now: () => NOW },
-    );
-
-    expect(spawnCalls).toHaveLength(0);
-  });
-
-  it('appends rate-limited hint with minutes remaining', async () => {
-    vi.stubEnv('NO_COLOR', '1');
-    const NOW = Date.now();
-    const cache = makeCacheWithUsage({}, {
-      lastUsageRefreshAt: NOW - 30 * 1000,
-      rateLimitedUntilMs: NOW + 4 * 60 * 1000, // 4 min remaining
-    });
-
-    const { output } = await runWithCache(
-      cache,
-      loadFixture('stdin-enterprise.json'),
-      { now: () => NOW },
-    );
-
-    expect(output).toContain(RATE_LIMITED_HINT_PREFIX.trim());
-    expect(output).toMatch(/retry in 4m/);
-  });
-
-  it('uses seconds for sub-minute cooldown', async () => {
-    vi.stubEnv('NO_COLOR', '1');
-    const NOW = Date.now();
-    const cache = makeCacheWithUsage({}, {
-      lastUsageRefreshAt: NOW - 30 * 1000,
-      rateLimitedUntilMs: NOW + 30 * 1000, // 30s remaining
-    });
-
-    const { output } = await runWithCache(
-      cache,
-      loadFixture('stdin-enterprise.json'),
-      { now: () => NOW },
-    );
-
-    expect(output).toMatch(/retry in 30s/);
-  });
-
-  it('does NOT show hint once cooldown has elapsed', async () => {
-    vi.stubEnv('NO_COLOR', '1');
-    const NOW = Date.now();
-    const cache = makeCacheWithUsage({}, {
-      lastUsageRefreshAt: NOW - 30 * 1000,
-      rateLimitedUntilMs: NOW - 1, // just expired
-    });
-
-    const { output, spawnCalls } = await runWithCache(
-      cache,
-      loadFixture('stdin-enterprise.json'),
-      { now: () => NOW },
-    );
-
-    expect(output).not.toContain(RATE_LIMITED_HINT_PREFIX.trim());
-    // Cache is recent (30s old), so still no spawn — that's fine.
-    expect(spawnCalls).toHaveLength(0);
-  });
-
-  it('uses adaptive backoff cooldown even when rateLimitedUntilMs has expired', async () => {
-    vi.stubEnv('NO_COLOR', '1');
-    const NOW = Date.now();
-    const cache = makeCacheWithUsage({}, {
-      lastUsageRefreshAt: NOW - 30 * 1000, // recent by stale rule
-      rateLimitedUntilMs: NOW - 1_000, // expired upstream cooldown
-      nextRefreshAllowedAt: NOW + 2 * 60 * 1000, // still backoff-restricted
-    });
-
-    const { output, spawnCalls } = await runWithCache(
-      cache,
-      loadFixture('stdin-enterprise.json'),
-      { now: () => NOW },
-    );
-
-    expect(output).toContain('retry in 2m');
-    expect(spawnCalls).toHaveLength(0);
-  });
-
-  it('cooldown hint takes precedence over no-hint when no auth issue', async () => {
-    // Sanity: hint must be present alongside the figures.
-    vi.stubEnv('NO_COLOR', '1');
-    const NOW = Date.now();
-    const cache = makeCacheWithUsage({}, {
-      lastUsageRefreshAt: NOW - 30 * 1000,
-      rateLimitedUntilMs: NOW + 2 * 60 * 1000,
-    });
-
-    const { output } = await runWithCache(
-      cache,
-      loadFixture('stdin-enterprise.json'),
-      { now: () => NOW },
-    );
-
-    expect(output).toContain('$780.00 / $1000.00 (78%)');
-    expect(output).toContain('retry in 2m');
   });
 });

@@ -43,6 +43,7 @@ export class CredentialNotFoundError extends Error {
 export interface DiscoverOptions {
   /** Override homedir for testing. */
   homedirOverride?: string;
+  claudeConfigDirOverride?: string;
   /** Override platform for testing. */
   platformOverride?: NodeJS.Platform;
   /**
@@ -147,16 +148,13 @@ function readFromKeychain(
  * Throws `SyntaxError` or `InvalidEnvelopeError` on malformed content
  * (wraps with context naming the file).
  */
-async function readFromFile(
+export async function readCredentialFile(
   filePath: string,
-  readFileFn: typeof nodeReadFile,
+  readFileFn: typeof nodeReadFile = nodeReadFile,
 ): Promise<OAuthCredentials | null> {
   let raw: string;
   try {
-    // The overloaded signature makes TS unhappy with the union; cast to any to
-    // call with explicit 'utf-8' encoding and get a string back.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    raw = await (readFileFn as any)(filePath, 'utf-8') as string;
+    raw = await readFileFn(filePath, 'utf-8');
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
     if (e.code === 'ENOENT') {
@@ -176,10 +174,8 @@ async function readFromFile(
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(
-      `Credential file ${filePath} contains invalid JSON: ${(err as Error).message}`,
-    );
+  } catch {
+    throw new Error(`Credential file ${filePath} contains invalid JSON`);
   }
 
   // decodeEnvelope throws InvalidEnvelopeError on missing/invalid fields.
@@ -211,6 +207,10 @@ async function readFromFile(
 export async function discover(options?: DiscoverOptions): Promise<OAuthCredentials> {
   const platform = options?.platformOverride ?? process.platform;
   const home = options?.homedirOverride ?? nodeHomedir();
+  const configDir =
+    options?.claudeConfigDirOverride ??
+    process.env['CLAUDE_CONFIG_DIR'] ??
+    join(home, '.claude');
   const spawnFn = options?.spawnOverride ?? nodeSpawn;
   const readFileFn = options?.readFileOverride ?? nodeReadFile;
 
@@ -227,17 +227,17 @@ export async function discover(options?: DiscoverOptions): Promise<OAuthCredenti
   }
 
   // ── Step 2: ~/.claude/.credentials.json ────────────────────────────────
-  const dotCredPath = join(home, '.claude', '.credentials.json');
+  const dotCredPath = join(configDir, '.credentials.json');
   pathsTried.push(dotCredPath);
-  const dotCredResult = await readFromFile(dotCredPath, readFileFn);
+  const dotCredResult = await readCredentialFile(dotCredPath, readFileFn);
   if (dotCredResult !== null) {
     return dotCredResult;
   }
 
   // ── Step 3: ~/.claude/credentials.json ─────────────────────────────────
-  const credPath = join(home, '.claude', 'credentials.json');
+  const credPath = join(configDir, 'credentials.json');
   pathsTried.push(credPath);
-  const credResult = await readFromFile(credPath, readFileFn);
+  const credResult = await readCredentialFile(credPath, readFileFn);
   if (credResult !== null) {
     return credResult;
   }

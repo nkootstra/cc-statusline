@@ -325,6 +325,24 @@ describe('discover', () => {
     expect(spawnFn).not.toHaveBeenCalled();
   });
 
+  it('uses an injected Claude config directory for automatic file discovery', async () => {
+    const configDir = join(HOME, 'custom-claude');
+    const configuredCredentialsPath = join(configDir, '.credentials.json');
+    const readFileFn = makeFakeReadFile({
+      [configuredCredentialsPath]: envelopeJson(VALID_ENVELOPE),
+    });
+
+    const result = await discover({
+      platformOverride: 'linux',
+      homedirOverride: HOME,
+      claudeConfigDirOverride: configDir,
+      readFileOverride: readFileFn,
+    });
+
+    expect(result).toEqual(VALID_ENVELOPE.claudeAiOauth);
+    expect(readFileFn).toHaveBeenCalledWith(configuredCredentialsPath, 'utf-8');
+  });
+
   it('happy Windows file: returns credentials from .credentials.json without calling spawn', async () => {
     const spawnFn = makeFakeSpawn('', 0);
     const readFileFn = makeFakeReadFile({
@@ -484,6 +502,22 @@ describe('discover', () => {
         readFileOverride: readFileFn,
       }),
     ).rejects.toThrow(/invalid JSON/i);
+  });
+
+  it('invalid JSON errors never reflect credential file contents', async () => {
+    const leakedToken = 'sk-ant-must-not-appear';
+    const readFileFn = makeFakeReadFile({
+      [dotCredPath]: `{"claudeAiOauth": {"accessToken": "${leakedToken}"`,
+    });
+
+    const rejection = discover({
+      platformOverride: 'linux',
+      homedirOverride: HOME,
+      readFileOverride: readFileFn,
+    });
+
+    await expect(rejection).rejects.toThrow(/invalid JSON/i);
+    await expect(rejection).rejects.not.toThrow(leakedToken);
   });
 
   // ── EACCES ─────────────────────────────────────────────────────────────

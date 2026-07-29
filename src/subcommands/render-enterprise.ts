@@ -14,16 +14,15 @@ import {
 } from '../statusline/format';
 import {
   readCache,
-  isRefreshInFlight,
+  updateCache,
   defaultCachePath,
 } from '../cache/store';
 import type { Cache } from '../cache/store';
 import type { ExtraUsage, UsageBucket, UsageResponse } from '../oauth/types';
 import {
-  createDiagnosticLogger,
-  defaultDiagnosticLogPath,
-  type DiagnosticLogger,
-} from '../diagnostics/logger';
+  decideEnterpriseRefresh,
+  rateLimitCooldownRemainingMs,
+} from './enterprise-refresh-policy';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -35,7 +34,9 @@ const STALE_THRESHOLD_MAX_MS = 300 * 1000; // 5 minutes
 const STALE_THRESHOLD_ENV = 'CC_STATUSLINE_ENTERPRISE_STALE_MS';
 
 /** Remediation hint appended when authState is 'fatal'. Must be ≤ 50 chars. */
-export const AUTH_FATAL_HINT = ' re-run init to re-auth';
+export const AUTH_FATAL_HINT = ' run init to repair auth';
+
+export const MISSING_CACHE_HINT = 'run init';
 
 /** Hint appended when authState is 'cloudflare-blocked'. */
 export const CLOUDFLARE_HINT = ' refresh blocked (cloudflare); see README#cloudflare';
@@ -60,12 +61,17 @@ function formatRateLimitedHint(msUntilReset: number): string {
  * Low-level spawn abstraction: mirrors the child_process.spawn signature for
  * the pieces we care about, so tests can capture exactly what would be executed.
  */
-export type SpawnFn = (command: string, args: string[], opts: SpawnOptions) => void;
+type SafeSpawnOptions = SpawnOptions & { shell: false };
+
+export type SpawnFn = (
+  command: string,
+  args: string[],
+  opts: SafeSpawnOptions,
+) => void;
 
 export interface RenderEnterpriseDeps {
   cachePath?: string;
   bundlePath?: string;
-  logger?: DiagnosticLogger;
   /** Override the spawn call for testing. Receives (command, args, opts). */
   spawnRefresh?: SpawnFn;
   now?: () => number;
@@ -173,13 +179,6 @@ function getStaleThresholdMs(): number {
   return Math.max(STALE_THRESHOLD_MIN_MS, Math.min(STALE_THRESHOLD_MAX_MS, rounded));
 }
 
-function getCooldownRemainingMs(cache: Cache, nowMs: number): number {
-  return Math.max(
-    0,
-    Math.max(cache.rateLimitedUntilMs, cache.nextRefreshAllowedAt) - nowMs,
-  );
-}
-
 function buildExtraUsageSegment(extra: ExtraUsage): string {
   if (!hasCreditUsage(extra)) {
     return `usage ${MISSING}`;
@@ -206,7 +205,7 @@ function buildFallbackUsageSegment(usage: UsageResponse, nowMs: number): string 
 /**
  * Build the usage segment for Enterprise users.
  *
- * When cache is null (missing / malformed), returns `usage — · fetching…`.
+ * When cache is null (missing / malformed), returns an actionable init hint.
  * Staleness dim and STALE_MARKER are applied here.
  * Auth-state dim (fatal) is applied by the caller.
  */
@@ -216,7 +215,14 @@ function buildUsageSegment(
   nowMs: number,
   sessionCostUsd: number,
 ): { text: string; isFetching: boolean } {
-  if (cache === null || cache.usage === null) {
+  if (cache === null) {
+    return {
+      text: `usage ${MISSING}${SEP}${MISSING_CACHE_HINT}`,
+      isFetching: false,
+    };
+  }
+
+  if (cache.usage === null) {
     return { text: `usage ${MISSING}${SEP}fetching…`, isFetching: true };
   }
 
@@ -254,12 +260,69 @@ function buildMinimalEnv(): NodeJS.ProcessEnv {
 }
 
 function defaultSpawnFn(): SpawnFn {
-  return (command: string, args: string[], opts: SpawnOptions): void => {
-    const child = spawn(command, args, { ...opts, env: buildMinimalEnv(), shell: false });
-    if (process.platform !== 'win32') {
-      child.unref();
-    }
+  return (command: string, args: string[], opts: SafeSpawnOptions): void => {
+    const child = spawn(command, args, {
+      ...opts,
+      env: buildMinimalEnv(),
+      shell: false,
+    });
+    child.unref();
   };
+}
+
+async function claimRefresh(
+  cachePath: string,
+  nowMs: number,
+  staleThresholdMs: number,
+): Promise<number | null> {
+  try {
+    return await updateCache(cachePath, (current) => {
+      const decision = decideEnterpriseRefresh(
+        current,
+        nowMs,
+        staleThresholdMs,
+      );
+      if (decision.action !== 'spawn' || current === null) {
+        return { kind: 'skip', value: null };
+      }
+      return {
+        kind: 'write',
+        cache: {
+          ...current,
+          lastRefreshStartedAt: nowMs,
+        },
+        value: nowMs,
+      };
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function releaseRefreshClaim(
+  cachePath: string,
+  claimedAt: number,
+): Promise<void> {
+  try {
+    await updateCache(cachePath, (current) => {
+      if (
+        current === null ||
+        current.lastRefreshStartedAt !== claimedAt
+      ) {
+        return { kind: 'skip', value: undefined };
+      }
+      return {
+        kind: 'write',
+        cache: {
+          ...current,
+          lastRefreshStartedAt: 0,
+        },
+        value: undefined,
+      };
+    });
+  } catch {
+    return;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -305,7 +368,7 @@ function renderLine(
       // Render normally; just append hint.
       authHint = CLOUDFLARE_HINT;
     } else {
-      const cooldownRemainingMs = getCooldownRemainingMs(cache, nowMs);
+      const cooldownRemainingMs = rateLimitCooldownRemainingMs(cache, nowMs);
       if (cooldownRemainingMs > 0) {
         // Currently rate-limited (cooldown not yet elapsed). Render figures
         // normally — they're still the most recent we know — but tell the user
@@ -353,7 +416,6 @@ export async function runRenderEnterprise(
   const bundlePath = deps.bundlePath ?? __filename;
   const now = deps.now ?? (() => Date.now());
   const staleThresholdMs = getStaleThresholdMs();
-  const logger = deps.logger ?? createDiagnosticLogger(defaultDiagnosticLogPath(cachePath), { now });
   const spawnFn = deps.spawnRefresh ?? defaultSpawnFn();
 
   // Step 1: Read stdin.
@@ -376,61 +438,32 @@ export async function runRenderEnterprise(
   // Step 2: Read cache synchronously.
   const cache = readCache(cachePath);
   const nowMs = now();
-  const refreshCooldownRemainingMs = cache !== null ? getCooldownRemainingMs(cache, nowMs) : 0;
-  const inCooldown = refreshCooldownRemainingMs > 0;
-  const inAdaptiveCooldown = cache !== null && cache.nextRefreshAllowedAt > cache.rateLimitedUntilMs;
+  const refreshDecision = decideEnterpriseRefresh(
+    cache,
+    nowMs,
+    staleThresholdMs,
+  );
 
-  // Step 3: Decide whether to fire a refresh subprocess.
-  const staleAge = cache !== null ? nowMs - cache.lastUsageRefreshAt : Infinity;
-  const isStale = staleAge >= staleThresholdMs;
-  const cacheIsMissing = cache === null;
-
-  // Don't fire if authState is 'fatal' (init must rerun).
-  const authFatal = cache?.authState === 'fatal';
-
-  // Don't fire if another refresh is already in flight.
-  const inFlight = cache !== null && isRefreshInFlight(cache, nowMs);
-
-  // Don't fire while in rate-limit cooldown — would just earn another 429.
-  // Includes adaptive backoff from previous rate-limit events.
-  // `inAdaptiveCooldown` tracks if adaptive backoff is stricter than upstream.
-
-  const shouldFire = (cacheIsMissing || isStale) && !authFatal && !inFlight && !inCooldown;
-
-  if (cacheIsMissing || isStale) {
-    const reason = cacheIsMissing
-      ? 'cache-missing'
-      : authFatal
-        ? 'auth-fatal'
-        : inFlight
-          ? 'in-flight'
-          : inCooldown
-            ? (inAdaptiveCooldown ? 'adaptive-backoff' : 'rate-limit-cooldown')
-            : 'stale-cache';
-    void logger.log({
-      event: 'render.refresh_decision',
-      action: shouldFire ? 'spawn' : 'skip',
-      reason,
-      usageAgeMs: Number.isFinite(staleAge) ? staleAge : null,
-      cooldownRemainingMs: inCooldown && cache !== null
-        ? refreshCooldownRemainingMs
-        : 0,
-    });
-  }
-
-  if (shouldFire) {
-    const minimalEnv = buildMinimalEnv();
-    if (process.platform === 'win32') {
-      spawnFn('cmd.exe', ['/c', 'start', '/b', '/min', process.execPath, bundlePath, 'refresh'], {
-        stdio: 'ignore',
-        env: minimalEnv,
-      });
-    } else {
-      spawnFn(process.execPath, [bundlePath, 'refresh'], {
-        detached: true,
-        stdio: 'ignore',
-        env: minimalEnv,
-      });
+  if (refreshDecision.action === 'spawn') {
+    const claimedAt = await claimRefresh(
+      cachePath,
+      nowMs,
+      staleThresholdMs,
+    );
+    if (claimedAt !== null) {
+      const minimalEnv = buildMinimalEnv();
+      const claimArg = `--claimed-at=${claimedAt}`;
+      try {
+        spawnFn(process.execPath, [bundlePath, 'refresh', claimArg], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+          env: minimalEnv,
+          shell: false,
+        });
+      } catch {
+        await releaseRefreshClaim(cachePath, claimedAt);
+      }
     }
   }
 

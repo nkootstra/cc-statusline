@@ -17,9 +17,9 @@ npm run typecheck  # tsc --noEmit
 
 ```
 src/
-  cache/          token + usage cache (read/write, 0600 mode)
-  credentials/    platform-aware OAuth credential discovery
-  oauth/          token refresh and usage API client
+  cache/          access-token + usage cache (schema v4, 0600 mode)
+  credentials/    OAuth credential discovery and source rereading
+  oauth/          usage API client
   settings/       ~/.claude/settings.json mutator
   statusline/     output formatter + stdin reader for Claude Code
   subcommands/    init, uninstall, refresh, render-promax, render-enterprise

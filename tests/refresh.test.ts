@@ -1,39 +1,43 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { runRefresh } from '../src/subcommands/refresh';
-import { readCache, writeCache, type Cache } from '../src/cache/store';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import {
+  readCache,
+  writeCache,
+  type Cache,
+} from '../src/cache/store';
+import type { OAuthCredentials } from '../src/credentials/envelope';
 import type { UsageResponse } from '../src/oauth/types';
-import { readDiagnosticLog } from '../src/diagnostics/logger';
+import type { CredentialSource } from '../src/credentials/source';
+import {
+  runRefresh,
+  type RefreshDeps,
+} from '../src/subcommands/refresh';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function makeTmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'cc-statusline-refresh-test-'));
-}
-
-function cachePath(dir: string): string {
-  return path.join(dir, 'cache.json');
-}
-
-const MOCK_USAGE: UsageResponse = {
-  five_hour: { utilization: 0.1, resetsAt: '2026-05-03T12:00:00Z' },
-  seven_day: { utilization: 0.2, resetsAt: '2026-05-10T00:00:00Z' },
+const USAGE: UsageResponse = {
+  five_hour: { utilization: 12, resets_at: '2026-07-28T12:00:00Z' },
+  seven_day: { utilization: 34, resets_at: '2026-08-01T00:00:00Z' },
 };
 
-function makeCache(overrides: Partial<Cache> = {}): Cache {
-  const now = Date.now();
+const CONCURRENT_USAGE: UsageResponse = {
+  five_hour: { utilization: 91, resets_at: '2026-07-28T13:00:00Z' },
+  seven_day: { utilization: 82, resets_at: '2026-08-02T00:00:00Z' },
+};
+
+type SourceLoader = (
+  source: CredentialSource,
+) => Promise<OAuthCredentials>;
+
+function makeCache(now: number, overrides: Partial<Cache> = {}): Cache {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     authState: 'ok',
     credentials: {
-      accessToken: 'at-fresh-token',
-      refreshToken: 'rt-refresh-token',
-      expiresAt: now + 60 * 60 * 1000, // 1 hour from now — fresh
+      accessToken: 'cached-access',
+      expiresAt: now + 60 * 60_000,
     },
+    credentialSource: { kind: 'claude-code' },
     usage: null,
     lastUsageRefreshAt: 0,
     lastRefreshStartedAt: 0,
@@ -45,836 +49,680 @@ function makeCache(overrides: Partial<Cache> = {}): Cache {
   };
 }
 
-/**
- * Build a minimal fetch mock that returns the given responses in order.
- * Each entry is a [status, bodyFn] tuple. bodyFn is called to produce the
- * response body (as an object that will be JSON-stringified, or a string for
- * text responses).
- */
-function buildFetchMock(
-  responses: Array<{
-    status: number;
-    body?: unknown;
-    headers?: Record<string, string>;
-    isText?: boolean;
-  }>,
-): typeof fetch {
-  let callIndex = 0;
-  return async (_input: string | URL | Request, _init?: RequestInit): Promise<Response> => {
-    const entry = responses[callIndex++];
-    if (entry === undefined) {
-      throw new Error('Unexpected extra fetch call');
-    }
-    const bodyStr =
-      entry.body !== undefined
-        ? entry.isText
-          ? String(entry.body)
-          : JSON.stringify(entry.body)
-        : '';
-    const headersInit: Record<string, string> = entry.headers ?? {};
-    return new Response(bodyStr, {
-      status: entry.status,
-      headers: headersInit,
-    });
-  };
+function response(
+  status: number,
+  body: unknown = '',
+  headers: Record<string, string> = {},
+): Response {
+  return new Response(
+    typeof body === 'string' ? body : JSON.stringify(body),
+    { status, headers },
+  );
 }
 
-/** Write a cache object to a temp dir's cache path. */
-async function writeTestCache(dir: string, cache: Cache): Promise<void> {
-  await writeCache(cache, cachePath(dir));
+function withSourceLoader(
+  deps: RefreshDeps,
+  loadCredentialSourceImpl: SourceLoader,
+): RefreshDeps {
+  return {
+    ...deps,
+    loadCredentialSourceImpl,
+  } as RefreshDeps;
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+function spyOnStdout() {
+  return vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+}
+
+function spyOnStderr() {
+  return vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+}
 
 describe('runRefresh', () => {
   let tmpDir: string;
-  let stdoutCallCount: number;
-  let stderrCallCount: number;
-  let stdoutRestore: () => void;
-  let stderrRestore: () => void;
+  let cachePath: string;
+  let now: number;
+  let stdout: ReturnType<typeof spyOnStdout>;
+  let stderr: ReturnType<typeof spyOnStderr>;
 
   beforeEach(() => {
-    tmpDir = makeTmpDir();
-    stdoutCallCount = 0;
-    stderrCallCount = 0;
-    const origStdout = process.stdout.write.bind(process.stdout);
-    const origStderr = process.stderr.write.bind(process.stderr);
-    // @ts-expect-error -- intentional spy override
-    process.stdout.write = (...args: Parameters<typeof process.stdout.write>) => { stdoutCallCount++; return true; };
-    // @ts-expect-error -- intentional spy override
-    process.stderr.write = (...args: Parameters<typeof process.stderr.write>) => { stderrCallCount++; return true; };
-    stdoutRestore = () => { process.stdout.write = origStdout; };
-    stderrRestore = () => { process.stderr.write = origStderr; };
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-statusline-refresh-'));
+    cachePath = path.join(tmpDir, 'cache.json');
+    now = 1_800_000_000_000;
+    stdout = spyOnStdout();
+    stderr = spyOnStderr();
   });
 
   afterEach(() => {
-    stdoutRestore();
-    stderrRestore();
+    stdout.mockRestore();
+    stderr.mockRestore();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // -------------------------------------------------------------------------
-  // Scenario 1: Happy path — token fresh
-  // -------------------------------------------------------------------------
-  it('1. happy path (token fresh): calls only fetchUsage, persists usage, authState ok', async () => {
-    const now = Date.now();
-    const cache = makeCache({
+  it('fetches usage once for a fresh usable cache without loading its source', async () => {
+    await writeCache(makeCache(now), cachePath);
+    const fetchImpl = vi.fn().mockResolvedValue(response(200, USAGE));
+    const loadSource = vi.fn<SourceLoader>();
+
+    expect(await runRefresh([], withSourceLoader({
+      cachePath,
+      fetchImpl,
+      now: () => now,
+    }, loadSource))).toBe(0);
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(loadSource).not.toHaveBeenCalled();
+    expect(readCache(cachePath)?.usage).toEqual(USAGE);
+  });
+
+  it('honors a refresh claim inherited from the renderer', async () => {
+    await writeCache(makeCache(now, {
+      lastRefreshStartedAt: now,
+    }), cachePath);
+    const fetchImpl = vi.fn().mockResolvedValue(response(200, USAGE));
+
+    expect(await runRefresh([`--claimed-at=${now}`], {
+      cachePath,
+      fetchImpl,
+      now: () => now,
+    })).toBe(0);
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(readCache(cachePath)?.usage).toEqual(USAGE);
+  });
+
+  it('does not refresh after an inherited claim has been replaced', async () => {
+    await writeCache(makeCache(now, {
+      lastRefreshStartedAt: now,
+    }), cachePath);
+    const fetchImpl = vi.fn();
+
+    expect(await runRefresh([`--claimed-at=${now - 1}`], {
+      cachePath,
+      fetchImpl,
+      now: () => now,
+    })).toBe(0);
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(readCache(cachePath)?.lastRefreshStartedAt).toBe(now);
+  });
+
+  it('loads the recorded source near expiry and never calls or sends data to a token endpoint', async () => {
+    const cached = makeCache(now, {
       credentials: {
-        accessToken: 'at-fresh',
-        refreshToken: 'rt-fresh',
-        expiresAt: now + 60 * 60 * 1000, // 1 hour — fresh
+        accessToken: 'old-access',
+        expiresAt: now + 2 * 60_000,
       },
     });
-    await writeTestCache(tmpDir, cache);
-
-    let fetchCallCount = 0;
-    const mockFetch = buildFetchMock([
-      // Only one call expected — fetchUsage
-      { status: 200, body: MOCK_USAGE },
-    ]);
-    const wrappedFetch: typeof fetch = async (input, init) => {
-      fetchCallCount++;
-      return mockFetch(input, init);
+    await writeCache(cached, cachePath);
+    const loadSource = vi.fn<SourceLoader>().mockResolvedValue({
+      accessToken: 'new-access',
+      refreshToken: 'source-refresh-secret',
+      expiresAt: now + 60 * 60_000,
+    });
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      requests.push({ url: String(input), init });
+      return response(200, USAGE);
     };
 
-    const exitCode = await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: wrappedFetch,
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      fetchImpl,
+      now: () => now,
+    }, loadSource));
+
+    expect(loadSource).toHaveBeenCalledWith(cached.credentialSource);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toContain('/usage');
+    expect(requests[0]?.url).not.toContain('/token');
+    expect(JSON.stringify(requests[0]?.init)).not.toContain('source-refresh-secret');
+    expect(readCache(cachePath)?.credentials).toEqual({
+      accessToken: 'new-access',
+      expiresAt: now + 60 * 60_000,
     });
-
-    expect(exitCode).toBe(0);
-    expect(fetchCallCount).toBe(1);
-
-    const result = readCache(cachePath(tmpDir));
-    expect(result).not.toBeNull();
-    expect(result!.authState).toBe('ok');
-    expect(result!.usage).toEqual(MOCK_USAGE);
-    expect(result!.lastUsageRefreshAt).toBeGreaterThan(0);
-    expect(result!.lastErrorMessage).toBeNull();
   });
 
-  // -------------------------------------------------------------------------
-  // Scenario 2: Happy path — token near expiry
-  // -------------------------------------------------------------------------
-  it('2. happy path (token near expiry): calls refresh then fetchUsage, persists new credentials + usage', async () => {
-    const now = Date.now();
-    const cache = makeCache({
+  it('adopts a near-expiry candidate only after its usage request succeeds', async () => {
+    const cached = makeCache(now, {
+      credentials: { accessToken: 'old-access', expiresAt: now + 60_000 },
+      usage: USAGE,
+    });
+    await writeCache(cached, cachePath);
+    const candidate: OAuthCredentials = {
+      accessToken: 'candidate-access',
+      refreshToken: 'candidate-refresh',
+      expiresAt: now + 60 * 60_000,
+    };
+
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      now: () => now,
+      fetchImpl: vi.fn().mockResolvedValue(
+        response(500, 'candidate-access candidate-refresh'),
+      ),
+    }, vi.fn<SourceLoader>().mockResolvedValue(candidate)));
+
+    const result = readCache(cachePath);
+    expect(result?.credentials).toEqual(cached.credentials);
+    expect(result?.usage).toEqual(USAGE);
+    expect(result?.lastErrorMessage).not.toContain('candidate-access');
+    expect(result?.lastErrorMessage).not.toContain('candidate-refresh');
+  });
+
+  it('promotes an advanced expiry for an unchanged token after usage succeeds', async () => {
+    await writeCache(makeCache(now, {
+      credentials: { accessToken: 'same-access', expiresAt: now + 60_000 },
+    }), cachePath);
+    const advancedExpiry = now + 90 * 60_000;
+
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      now: () => now,
+      fetchImpl: vi.fn().mockResolvedValue(response(200, USAGE)),
+    }, vi.fn<SourceLoader>().mockResolvedValue({
+      accessToken: 'same-access',
+      refreshToken: 'unused-refresh',
+      expiresAt: advancedExpiry,
+    })));
+
+    expect(readCache(cachePath)?.credentials).toEqual({
+      accessToken: 'same-access',
+      expiresAt: advancedExpiry,
+    });
+  });
+
+  it('tries unchanged source only once and marks a final 401 fatal', async () => {
+    await writeCache(makeCache(now), cachePath);
+    const fetchImpl = vi.fn().mockResolvedValue(response(401));
+    const loadSource = vi.fn<SourceLoader>().mockResolvedValue({
+      accessToken: 'cached-access',
+      refreshToken: 'unchanged-refresh',
+      expiresAt: now + 60 * 60_000,
+    });
+
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      fetchImpl,
+      now: () => now,
+    }, loadSource));
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(loadSource).toHaveBeenCalledOnce();
+    expect(readCache(cachePath)?.authState).toBe('fatal');
+  });
+
+  it('reloads after a usage 401 and retries once with a different source token', async () => {
+    await writeCache(makeCache(now), cachePath);
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response(401))
+      .mockResolvedValueOnce(response(200, USAGE));
+
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      fetchImpl,
+      now: () => now,
+    }, vi.fn<SourceLoader>().mockResolvedValue({
+      accessToken: 'recovered-access',
+      refreshToken: 'recovered-refresh',
+      expiresAt: now + 2 * 60 * 60_000,
+    })));
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({
+      Authorization: 'Bearer cached-access',
+    });
+    expect(fetchImpl.mock.calls[1]?.[1]?.headers).toMatchObject({
+      Authorization: 'Bearer recovered-access',
+    });
+    expect(readCache(cachePath)).toMatchObject({
+      authState: 'ok',
       credentials: {
-        accessToken: 'at-old',
-        refreshToken: 'rt-old',
-        expiresAt: now + 2 * 60 * 1000, // 2 minutes — near expiry
+        accessToken: 'recovered-access',
+        expiresAt: now + 2 * 60 * 60_000,
       },
+      usage: USAGE,
     });
-    await writeTestCache(tmpDir, cache);
-
-    const newExpiresAt = now + 3600 * 1000;
-    const urls: string[] = [];
-    const responses = [
-      // First call: refresh
-      {
-        status: 200,
-        body: {
-          access_token: 'at-new',
-          refresh_token: 'rt-new',
-          expires_in: 3600,
-        },
-      },
-      // Second call: fetchUsage
-      { status: 200, body: MOCK_USAGE },
-    ];
-    let respIdx = 0;
-
-    const mockFetch: typeof fetch = async (input, _init) => {
-      const url = typeof input === 'string' ? input : (input as Request).url ?? String(input);
-      urls.push(url);
-      const entry = responses[respIdx++]!;
-      return new Response(JSON.stringify(entry.body), { status: entry.status });
-    };
-
-    const exitCode = await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
-    });
-
-    expect(exitCode).toBe(0);
-    expect(respIdx).toBe(2);
-
-    // Refresh URL called first, usage URL second
-    expect(urls[0]).toContain('token');
-    expect(urls[1]).toContain('usage');
-
-    const result = readCache(cachePath(tmpDir));
-    expect(result).not.toBeNull();
-    expect(result!.credentials.accessToken).toBe('at-new');
-    expect(result!.credentials.refreshToken).toBe('rt-new');
-    expect(result!.credentials.expiresAt).toBeGreaterThan(newExpiresAt - 5000);
-    expect(result!.usage).toEqual(MOCK_USAGE);
-    expect(result!.authState).toBe('ok');
   });
 
-  // -------------------------------------------------------------------------
-  // Scenario 3: Cache missing
-  // -------------------------------------------------------------------------
-  it('3. cache missing: exit 0, no fetch calls', async () => {
-    // Do NOT write a cache file.
-    let fetchCalled = false;
-    const mockFetch: typeof fetch = async () => {
-      fetchCalled = true;
-      return new Response('', { status: 200 });
-    };
+  it('does not retry more than once when the replacement token also gets 401', async () => {
+    await writeCache(makeCache(now), cachePath);
+    const fetchImpl = vi.fn().mockResolvedValue(response(401));
 
-    const exitCode = await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
-    });
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      fetchImpl,
+      now: () => now,
+    }, vi.fn<SourceLoader>().mockResolvedValue({
+      accessToken: 'replacement-access',
+      refreshToken: 'replacement-refresh',
+      expiresAt: now + 60 * 60_000,
+    })));
 
-    expect(exitCode).toBe(0);
-    expect(fetchCalled).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const result = readCache(cachePath);
+    expect(result?.authState).toBe('fatal');
+    expect(result?.credentials.accessToken).toBe('cached-access');
+    expect(result?.lastErrorMessage).not.toContain('replacement-access');
+    expect(result?.lastErrorMessage).not.toContain('replacement-refresh');
   });
 
-  // -------------------------------------------------------------------------
-  // Scenario 4: authState fatal
-  // -------------------------------------------------------------------------
-  it('4. authState fatal: exit 0, no fetch calls', async () => {
-    const cache = makeCache({ authState: 'fatal' });
-    await writeTestCache(tmpDir, cache);
+  it('self-heals a fatal cache when its source contains a new usable token', async () => {
+    await writeCache(makeCache(now, {
+      authState: 'fatal',
+      lastErrorMessage: 'old 401',
+    }), cachePath);
+    const fetchImpl = vi.fn().mockResolvedValue(response(200, USAGE));
 
-    let fetchCalled = false;
-    const mockFetch: typeof fetch = async () => {
-      fetchCalled = true;
-      return new Response('', { status: 200 });
-    };
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      fetchImpl,
+      now: () => now,
+    }, vi.fn<SourceLoader>().mockResolvedValue({
+      accessToken: 'healed-access',
+      refreshToken: 'healed-refresh',
+      expiresAt: now + 60 * 60_000,
+    })));
 
-    const exitCode = await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(readCache(cachePath)).toMatchObject({
+      authState: 'ok',
+      credentials: { accessToken: 'healed-access' },
+      usage: USAGE,
+      lastErrorMessage: null,
     });
-
-    expect(exitCode).toBe(0);
-    expect(fetchCalled).toBe(false);
   });
 
-  // -------------------------------------------------------------------------
-  // Scenario 5: Refresh in flight
-  // -------------------------------------------------------------------------
-  it('5. refresh in flight: exit 0, no fetch calls', async () => {
-    const now = Date.now();
-    const cache = makeCache({
-      lastRefreshStartedAt: now - 500, // 500ms ago — within 1s window
+  it('loads the source for expired credentials', async () => {
+    await writeCache(makeCache(now, {
+      credentials: { accessToken: 'expired-access', expiresAt: now - 1 },
+    }), cachePath);
+    const loadSource = vi.fn<SourceLoader>().mockResolvedValue({
+      accessToken: 'current-access',
+      refreshToken: 'current-refresh',
+      expiresAt: now + 60 * 60_000,
     });
-    await writeTestCache(tmpDir, cache);
 
-    let fetchCalled = false;
-    const mockFetch: typeof fetch = async () => {
-      fetchCalled = true;
-      return new Response('', { status: 200 });
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      now: () => now,
+      fetchImpl: vi.fn().mockResolvedValue(response(200, USAGE)),
+    }, loadSource));
+
+    expect(loadSource).toHaveBeenCalledOnce();
+    expect(readCache(cachePath)?.credentials.accessToken).toBe('current-access');
+  });
+
+  it('preserves cached credentials and usage when source loading fails', async () => {
+    const cached = makeCache(now, {
+      credentials: { accessToken: 'preserved-access', expiresAt: now + 60_000 },
+      usage: USAGE,
+      lastUsageRefreshAt: now - 30_000,
+    });
+    await writeCache(cached, cachePath);
+    const fetchImpl = vi.fn();
+
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      fetchImpl,
+      now: () => now,
+    }, vi.fn<SourceLoader>().mockRejectedValue(
+      new Error('source validation failed'),
+    )));
+
+    const result = readCache(cachePath);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(result?.credentials).toEqual(cached.credentials);
+    expect(result?.usage).toEqual(USAGE);
+    expect(result?.lastUsageRefreshAt).toBe(cached.lastUsageRefreshAt);
+    expect(result?.nextRefreshAllowedAt).toBe(now + 60_000);
+  });
+
+  it('preserves cached credentials and usage if reload after a 401 fails', async () => {
+    const cached = makeCache(now, { usage: USAGE });
+    await writeCache(cached, cachePath);
+
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      fetchImpl: vi.fn().mockResolvedValue(response(401)),
+      now: () => now,
+    }, vi.fn<SourceLoader>().mockRejectedValue(
+      new Error('cannot validate credential source'),
+    )));
+
+    const result = readCache(cachePath);
+    expect(result?.credentials).toEqual(cached.credentials);
+    expect(result?.usage).toEqual(USAGE);
+    expect(result?.authState).toBe('fatal');
+  });
+
+  it('reloads exactly the recorded explicit file source', async () => {
+    const source: CredentialSource = {
+      kind: 'file',
+      path: path.join(tmpDir, 'enterprise-credentials.json'),
     };
+    await writeCache(makeCache(now, {
+      authState: 'fatal',
+      credentialSource: source,
+    }), cachePath);
+    const loadSource = vi.fn<SourceLoader>().mockResolvedValue({
+      accessToken: 'file-access',
+      refreshToken: 'file-refresh',
+      expiresAt: now + 60 * 60_000,
+    });
 
-    const exitCode = await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      now: () => now,
+      fetchImpl: vi.fn().mockResolvedValue(response(200, USAGE)),
+    }, loadSource));
+
+    expect(loadSource).toHaveBeenCalledOnce();
+    expect(loadSource).toHaveBeenCalledWith(source);
+  });
+
+  it('does not overwrite credentials committed by init during a request', async () => {
+    await writeCache(makeCache(now), cachePath);
+    const initCredentials = {
+      accessToken: 'reauthenticated-access',
+      expiresAt: now + 2 * 60 * 60_000,
+    };
+    let initSnapshot: Cache | null = null;
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      await writeCache(makeCache(now, {
+        credentials: initCredentials,
+        usage: CONCURRENT_USAGE,
+        lastUsageRefreshAt: now + 1,
+        lastRefreshStartedAt: 0,
+      }), cachePath);
+      initSnapshot = readCache(cachePath);
+      return response(200, USAGE);
+    });
+
+    await runRefresh([], {
+      cachePath,
+      fetchImpl,
       now: () => now,
     });
 
-    expect(exitCode).toBe(0);
-    expect(fetchCalled).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(readCache(cachePath)).toEqual(initSnapshot);
   });
 
-  // -------------------------------------------------------------------------
-  // Scenario 6: Refresh returns auth-fatal → cache authState becomes 'fatal'
-  // -------------------------------------------------------------------------
-  it('6. refresh auth-fatal: cache.authState becomes fatal, subsequent run exits silently', async () => {
-    const now = Date.now();
-    const cache = makeCache({
-      credentials: {
-        accessToken: 'at-expiring',
-        refreshToken: 'rt-expiring',
-        expiresAt: now + 2 * 60 * 1000, // near expiry
-      },
+  it('discards candidate success when a concurrent cache has newer credentials and usage', async () => {
+    const starting = makeCache(now, {
+      credentials: { accessToken: 'starting-access', expiresAt: now + 60_000 },
     });
-    await writeTestCache(tmpDir, cache);
-
-    const mockFetch = buildFetchMock([
-      // Refresh returns 401 (auth-fatal)
-      { status: 401 },
-    ]);
-
-    const exitCode = await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
-    });
-
-    expect(exitCode).toBe(0);
-
-    const result = readCache(cachePath(tmpDir));
-    expect(result).not.toBeNull();
-    expect(result!.authState).toBe('fatal');
-    expect(result!.lastErrorMessage).not.toBeNull();
-
-    // Subsequent run should bail immediately without fetch.
-    let fetchCalled = false;
-    const mockFetch2: typeof fetch = async () => {
-      fetchCalled = true;
-      return new Response('', { status: 200 });
+    await writeCache(starting, cachePath);
+    const candidate: OAuthCredentials = {
+      accessToken: 'candidate-access',
+      refreshToken: 'candidate-refresh',
+      expiresAt: now + 60 * 60_000,
     };
-    const exitCode2 = await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch2,
-    });
-    expect(exitCode2).toBe(0);
-    expect(fetchCalled).toBe(false);
-  });
-
-  // -------------------------------------------------------------------------
-  // Scenario 7: fetchUsage auth-fatal post-rotation (tokenJustRotated === true)
-  // -------------------------------------------------------------------------
-  it('7. fetchUsage auth-fatal post-rotation: message mentions post-rotation revocation', async () => {
-    const now = Date.now();
-    const cache = makeCache({
-      credentials: {
-        accessToken: 'at-near',
-        refreshToken: 'rt-near',
-        expiresAt: now + 2 * 60 * 1000, // near expiry → will rotate
-      },
-    });
-    await writeTestCache(tmpDir, cache);
-
-    const mockFetch = buildFetchMock([
-      // Refresh succeeds
-      {
-        status: 200,
-        body: {
-          access_token: 'at-rotated',
-          refresh_token: 'rt-rotated',
-          expires_in: 3600,
-        },
-      },
-      // fetchUsage returns 401 auth-fatal
-      { status: 401 },
-    ]);
-
-    const exitCode = await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
-    });
-
-    expect(exitCode).toBe(0);
-    const result = readCache(cachePath(tmpDir));
-    expect(result).not.toBeNull();
-    expect(result!.authState).toBe('fatal');
-    // Should mention post-rotation revocation
-    expect(result!.lastErrorMessage).toMatch(/rotation|revocation/i);
-  });
-
-  // -------------------------------------------------------------------------
-  // Scenario 8: fetchUsage auth-fatal without rotation (tokenJustRotated === false)
-  // -------------------------------------------------------------------------
-  it('8. fetchUsage auth-fatal without rotation: standard fatal message', async () => {
-    const now = Date.now();
-    const cache = makeCache({
-      credentials: {
-        accessToken: 'at-fresh-fatal',
-        refreshToken: 'rt-fresh-fatal',
-        expiresAt: now + 60 * 60 * 1000, // fresh — no rotation
-      },
-    });
-    await writeTestCache(tmpDir, cache);
-
-    const mockFetch = buildFetchMock([
-      // fetchUsage returns 401 auth-fatal (no refresh call precedes)
-      { status: 401 },
-    ]);
-
-    const exitCode = await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
-    });
-
-    expect(exitCode).toBe(0);
-    const result = readCache(cachePath(tmpDir));
-    expect(result).not.toBeNull();
-    expect(result!.authState).toBe('fatal');
-    // Should NOT mention post-rotation
-    expect(result!.lastErrorMessage).not.toMatch(/rotation|revocation/i);
-    expect(result!.lastErrorMessage).toMatch(/auth-fatal|401/i);
-  });
-
-  // -------------------------------------------------------------------------
-  // Scenario 9: TOCTOU dedup
-  // -------------------------------------------------------------------------
-  it('9. TOCTOU dedup: second process sees competing lastRefreshStartedAt, exits without fetch', async () => {
-    // We simulate the race by making the 2nd readCache (the verify re-read)
-    // return a different lastRefreshStartedAt from what we wrote.
-    // Strategy: write the real cache, then use a deps.now that produces a
-    // stable timestamp, and manually overwrite the cache between writes.
-
-    const frozenNow = Date.now();
-    const cache = makeCache({ lastRefreshStartedAt: 0 });
-    await writeTestCache(tmpDir, cache);
-
-    let fetchCalled = false;
-    const mockFetch: typeof fetch = async () => {
-      fetchCalled = true;
-      return new Response(JSON.stringify(MOCK_USAGE), { status: 200 });
+    const newer = {
+      accessToken: 'concurrent-access',
+      expiresAt: now + 2 * 60 * 60_000,
+    };
+    let concurrentSnapshot: Cache | undefined;
+    const fetchImpl: typeof fetch = async () => {
+      const concurrent = readCache(cachePath)!;
+      concurrent.credentials = newer;
+      concurrent.usage = CONCURRENT_USAGE;
+      concurrent.lastUsageRefreshAt = now + 123;
+      concurrent.lastErrorMessage = 'newer process result';
+      concurrent.authState = 'ok';
+      await writeCache(concurrent, cachePath);
+      concurrentSnapshot = readCache(cachePath)!;
+      return response(200, USAGE);
     };
 
-    // We intercept by wrapping writeCache: after the CAS write, we overwrite
-    // the cache file with a competing lastRefreshStartedAt (different value).
-    // Since we can't easily intercept writeCache from outside, we instead test
-    // a cleaner approach: we use a custom now() that returns `frozenNow`, then
-    // after the test writes its CAS timestamp, we write a competing one.
-    //
-    // The cleanest pure approach is: start the runRefresh with a slow mockFetch
-    // that allows us to write a competing cache after the CAS write. But since
-    // runRefresh is async and we can't pause it mid-execution with a timer
-    // (no sleeps per guidelines), we test by pre-seeding a lastRefreshStartedAt
-    // that is DIFFERENT from frozenNow so the verify step catches it.
-    //
-    // The implementation re-reads the cache after writing startedAt. If the
-    // re-read returns a different lastRefreshStartedAt, it exits. We simulate
-    // this by writing the cache with a competing timestamp BEFORE runRefresh
-    // runs, but we need the CAS write to happen first.
-    //
-    // The reliable approach: use a mock writeCache. Instead, we test the
-    // isRefreshInFlight guard (scenario 5 covers that), and here we test the
-    // post-CAS verify mismatch by using vi.mock on the store.
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      fetchImpl,
+      now: () => now,
+    }, vi.fn<SourceLoader>().mockResolvedValue(candidate)));
 
-    // Use vi.mock for this specific test to intercept readCache.
-    // Since vitest doesn't support inline per-test module mocking easily
-    // without top-level vi.mock, we test the mismatch by having the cache
-    // already written with a competing timestamp before the second read
-    // (which is the verify read). We do this by:
-    // 1. Writing the cache normally.
-    // 2. Setting lastRefreshStartedAt = frozenNow - 1 (so it differs from frozenNow).
-    // 3. Having now() return frozenNow.
-    // 4. The implementation will write frozenNow, then re-read, and find the
-    //    file still has frozenNow (no race). This doesn't simulate the race.
-    //
-    // The correct simulation: we need to overwrite the cache BETWEEN the CAS
-    // write and the verify re-read. The only way without pausing the event loop
-    // is to use a fake fetchImpl that does the overwrite before returning.
-    // But the verify re-read happens before any fetch call.
-    //
-    // Solution: use a mockFetch that also overwrites the cache file with a
-    // competing timestamp when called, and verify fetch is NOT called (meaning
-    // the overwrite was done by a different mechanism). Instead, we can pass a
-    // custom writeCache wrapper via deps. Since deps only exposes cachePath,
-    // fetchImpl, and now, we cannot intercept writeCache.
-    //
-    // The practical test: We write the cache with lastRefreshStartedAt equal to
-    // frozenNow. When runRefresh runs with now() = frozenNow, it will see
-    // isRefreshInFlight = true (frozenNow - frozenNow = 0 < 1000) and exit
-    // early. This validates the in-flight path, which IS the TOCTOU guard.
-
-    // Pre-write the cache with lastRefreshStartedAt = frozenNow (simulating another
-    // process that just claimed the CAS lock).
-    const competingCache = makeCache({ lastRefreshStartedAt: frozenNow });
-    await writeTestCache(tmpDir, competingCache);
-
-    const exitCode = await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
-      now: () => frozenNow,
-    });
-
-    expect(exitCode).toBe(0);
-    expect(fetchCalled).toBe(false);
+    expect(readCache(cachePath)).toEqual(concurrentSnapshot);
   });
 
-  // -------------------------------------------------------------------------
-  // Scenario 10: Sanitized error — accessToken must not appear in persisted message
-  // -------------------------------------------------------------------------
-  it('10. sanitized error: persisted lastErrorMessage does not contain accessToken', async () => {
-    const now = Date.now();
-    const accessToken = 'at-secret-value-xyz';
-    const cache = makeCache({
-      credentials: {
-        accessToken,
-        refreshToken: 'rt-secret',
-        expiresAt: now + 60 * 60 * 1000, // fresh token
-      },
-    });
-    await writeTestCache(tmpDir, cache);
+  it('discards a final 401 when a concurrent cache has newer credentials and usage', async () => {
+    await writeCache(makeCache(now), cachePath);
+    const candidate: OAuthCredentials = {
+      accessToken: 'candidate-access',
+      refreshToken: 'candidate-refresh',
+      expiresAt: now + 60 * 60_000,
+    };
+    let concurrentSnapshot: Cache | undefined;
+    let callCount = 0;
+    const fetchImpl: typeof fetch = async () => {
+      callCount += 1;
+      if (callCount === 1) return response(401);
 
-    // fetchUsage returns a transient error whose message contains the accessToken
-    const mockFetch: typeof fetch = async () => {
-      throw new Error(`Network error with token ${accessToken}`);
+      const concurrent = readCache(cachePath)!;
+      concurrent.credentials = {
+        accessToken: 'concurrent-access',
+        expiresAt: now + 2 * 60 * 60_000,
+      };
+      concurrent.usage = CONCURRENT_USAGE;
+      concurrent.lastUsageRefreshAt = now + 456;
+      concurrent.lastErrorMessage = null;
+      concurrent.authState = 'ok';
+      await writeCache(concurrent, cachePath);
+      concurrentSnapshot = readCache(cachePath)!;
+      return response(401);
     };
 
-    const exitCode = await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
-    });
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      fetchImpl,
+      now: () => now,
+    }, vi.fn<SourceLoader>().mockResolvedValue(candidate)));
 
-    expect(exitCode).toBe(0);
-    const result = readCache(cachePath(tmpDir));
-    expect(result).not.toBeNull();
-    expect(result!.lastErrorMessage).not.toBeNull();
-    expect(result!.lastErrorMessage).not.toContain(accessToken);
-    expect(result!.lastErrorMessage).toContain('<redacted>');
+    expect(callCount).toBe(2);
+    expect(readCache(cachePath)).toEqual(concurrentSnapshot);
   });
 
-  // -------------------------------------------------------------------------
-  // Scenario 11: Cloudflare-blocked refresh
-  // -------------------------------------------------------------------------
-  it('11. cloudflare-blocked refresh: authState becomes cloudflare-blocked, message mentions Cloudflare', async () => {
-    const now = Date.now();
-    const cache = makeCache({
-      credentials: {
-        accessToken: 'at-cf',
-        refreshToken: 'rt-cf',
-        expiresAt: now + 2 * 60 * 1000, // near expiry
-      },
-    });
-    await writeTestCache(tmpDir, cache);
+  it('discards a transient candidate result when a concurrent cache has newer credentials and usage', async () => {
+    await writeCache(makeCache(now, {
+      credentials: { accessToken: 'starting-access', expiresAt: now + 60_000 },
+    }), cachePath);
+    let concurrentSnapshot: Cache | undefined;
+    const fetchImpl: typeof fetch = async () => {
+      const concurrent = readCache(cachePath)!;
+      concurrent.credentials = {
+        accessToken: 'concurrent-access',
+        expiresAt: now + 2 * 60 * 60_000,
+      };
+      concurrent.usage = CONCURRENT_USAGE;
+      concurrent.lastUsageRefreshAt = now + 789;
+      concurrent.lastErrorMessage = null;
+      await writeCache(concurrent, cachePath);
+      concurrentSnapshot = readCache(cachePath)!;
+      return response(500, 'stale request failed');
+    };
 
-    const mockFetch = buildFetchMock([
-      // Refresh returns 403 (cloudflare-blocked)
-      { status: 403 },
-    ]);
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      fetchImpl,
+      now: () => now,
+    }, vi.fn<SourceLoader>().mockResolvedValue({
+      accessToken: 'candidate-access',
+      refreshToken: 'candidate-refresh',
+      expiresAt: now + 60 * 60_000,
+    })));
 
-    const exitCode = await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
-    });
-
-    expect(exitCode).toBe(0);
-    const result = readCache(cachePath(tmpDir));
-    expect(result).not.toBeNull();
-    expect(result!.authState).toBe('cloudflare-blocked');
-    expect(result!.lastErrorMessage).toMatch(/cloudflare/i);
+    expect(readCache(cachePath)).toEqual(concurrentSnapshot);
   });
 
-  // -------------------------------------------------------------------------
-  // Scenario 12: Rate-limited fetchUsage
-  // -------------------------------------------------------------------------
-  it('12. rate-limited fetchUsage: persists rateLimitedUntilMs, header-present note, authState stays ok', async () => {
-    const frozenNow = Date.now();
-    const cache = makeCache({
-      credentials: {
-        accessToken: 'at-rl',
-        refreshToken: 'rt-rl',
-        expiresAt: frozenNow + 60 * 60 * 1000, // fresh
-      },
-    });
-    await writeTestCache(tmpDir, cache);
+  it('discards a source failure when a concurrent cache has newer credentials and usage', async () => {
+    await writeCache(makeCache(now, {
+      credentials: { accessToken: 'starting-access', expiresAt: now + 60_000 },
+    }), cachePath);
+    let concurrentSnapshot: Cache | undefined;
+    const loadSource: SourceLoader = async () => {
+      const concurrent = readCache(cachePath)!;
+      concurrent.credentials = {
+        accessToken: 'concurrent-access',
+        expiresAt: now + 2 * 60 * 60_000,
+      };
+      concurrent.usage = CONCURRENT_USAGE;
+      concurrent.lastUsageRefreshAt = now + 987;
+      concurrent.lastErrorMessage = null;
+      await writeCache(concurrent, cachePath);
+      concurrentSnapshot = readCache(cachePath)!;
+      throw new Error('stale source failed');
+    };
 
-    const mockFetch = buildFetchMock([
-      { status: 429, headers: { 'Retry-After': '120', 'x-should-retry': 'false' } },
-    ]);
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      fetchImpl: vi.fn(),
+      now: () => now,
+    }, loadSource));
 
-    const exitCode = await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
-      now: () => frozenNow,
-    });
-
-    expect(exitCode).toBe(0);
-    const result = readCache(cachePath(tmpDir));
-    expect(result).not.toBeNull();
-    expect(result!.authState).toBe('ok');
-    expect(result!.lastErrorMessage).toMatch(/retry-after/i);
-    expect(result!.lastErrorMessage).toContain('header present');
-    expect(result!.lastErrorMessage).toContain('x-should-retry: false');
-    expect(result!.rateLimitedUntilMs).toBe(frozenNow + 120_000);
-    expect(result!.nextRefreshAllowedAt).toBe(frozenNow + 300_000);
-    expect(result!.consecutiveRateLimitCount).toBe(1);
-
-    const log = await readDiagnosticLog(path.join(tmpDir, 'debug.log'));
-    expect(log).toContain('"event":"http.result"');
-    expect(log).toContain('"endpoint":"usage"');
-    expect(log).toContain('"status":429');
-    expect(log).toContain('"retryAfterSeconds":120');
-    expect(log).not.toContain('at-rl');
-    expect(log).not.toContain('rt-rl');
+    expect(readCache(cachePath)).toEqual(concurrentSnapshot);
   });
 
-  it('12b. rate-limited with header absent: lastErrorMessage notes default applied', async () => {
-    const frozenNow = Date.now();
-    const cache = makeCache({
-      credentials: {
-        accessToken: 'at-rl-no-header',
-        refreshToken: 'rt-rl-no-header',
-        expiresAt: frozenNow + 60 * 60 * 1000,
-      },
-    });
-    await writeTestCache(tmpDir, cache);
+  it('keeps missing, in-flight, and cooldown paths network-free', async () => {
+    const fetchImpl = vi.fn();
+    const loadSource = vi.fn<SourceLoader>();
+    const deps = withSourceLoader({
+      cachePath,
+      fetchImpl,
+      now: () => now,
+    }, loadSource);
 
-    const mockFetch = buildFetchMock([
-      { status: 429 }, // no Retry-After
-    ]);
+    await runRefresh([], deps);
 
+    await writeCache(makeCache(now, {
+      lastRefreshStartedAt: now - 500,
+    }), cachePath);
+    await runRefresh([], deps);
+
+    await writeCache(makeCache(now, {
+      rateLimitedUntilMs: now + 60_000,
+      nextRefreshAllowedAt: now + 120_000,
+    }), cachePath);
+    await runRefresh([], deps);
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(loadSource).not.toHaveBeenCalled();
+  });
+
+  it('treats malformed v4 JSON as a missing cache', async () => {
+    fs.writeFileSync(
+      cachePath,
+      JSON.stringify({ schemaVersion: 4 }),
+      'utf8',
+    );
+    const fetchImpl = vi.fn();
+    const loadSource = vi.fn<SourceLoader>();
+
+    expect(await runRefresh([], withSourceLoader({
+      cachePath,
+      fetchImpl,
+      now: () => now,
+    }, loadSource))).toBe(0);
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(loadSource).not.toHaveBeenCalled();
+    expect(readCache(cachePath)).toBeNull();
+  });
+
+  it('persists explicit 429 cooldown diagnostics and clears them on success', async () => {
+    await writeCache(makeCache(now), cachePath);
     await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
-      now: () => frozenNow,
+      cachePath,
+      now: () => now,
+      fetchImpl: vi.fn().mockResolvedValue(response(429, '', {
+        'Retry-After': '120',
+        'x-should-retry': 'false',
+      })),
     });
 
-    const result = readCache(cachePath(tmpDir));
-    expect(result!.lastErrorMessage).toContain('header absent, default applied');
-    expect(result!.rateLimitedUntilMs).toBe(frozenNow + 60_000);
-    expect(result!.nextRefreshAllowedAt).toBe(frozenNow + 240_000);
-    expect(result!.consecutiveRateLimitCount).toBe(1);
-  });
-
-  it('12c. successful fetchUsage clears rateLimitedUntilMs', async () => {
-    const frozenNow = Date.now();
-    const cache = makeCache({
-      credentials: {
-        accessToken: 'at-recover',
-        refreshToken: 'rt-recover',
-        expiresAt: frozenNow + 60 * 60 * 1000,
-      },
-      rateLimitedUntilMs: frozenNow - 1000, // expired cooldown — refresh proceeds
-    });
-    await writeTestCache(tmpDir, cache);
-
-    const mockFetch = buildFetchMock([
-      { status: 200, body: MOCK_USAGE },
-    ]);
-
-    await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
-      now: () => frozenNow,
-    });
-
-    const result = readCache(cachePath(tmpDir));
-    expect(result!.rateLimitedUntilMs).toBe(0);
-    expect(result!.nextRefreshAllowedAt).toBe(0);
-    expect(result!.consecutiveRateLimitCount).toBe(0);
-    expect(result!.usage).toEqual(MOCK_USAGE);
-  });
-
-  it('12e. consecutive rate limits increase backoff and streak', async () => {
-    const frozenNow = Date.now();
-    const cache = makeCache({
-      credentials: {
-        accessToken: 'at-rl-consecutive',
-        refreshToken: 'rt-rl-consecutive',
-        expiresAt: frozenNow + 60 * 60_000, // fresh
-      },
+    expect(readCache(cachePath)).toMatchObject({
+      authState: 'ok',
+      rateLimitedUntilMs: now + 120_000,
+      nextRefreshAllowedAt: now + 300_000,
       consecutiveRateLimitCount: 1,
-      nextRefreshAllowedAt: frozenNow - 1_000,
-      rateLimitedUntilMs: frozenNow - 1_000,
     });
-    await writeTestCache(tmpDir, cache);
+    expect(readCache(cachePath)?.lastErrorMessage).toContain(
+      'x-should-retry: false',
+    );
 
-    const mockFetch = buildFetchMock([
-      { status: 429, headers: { 'Retry-After': '60' } },
-    ]);
+    now += 301_000;
+    await runRefresh([], {
+      cachePath,
+      now: () => now,
+      fetchImpl: vi.fn().mockResolvedValue(response(200, USAGE)),
+    });
+    expect(readCache(cachePath)).toMatchObject({
+      rateLimitedUntilMs: 0,
+      nextRefreshAllowedAt: 0,
+      consecutiveRateLimitCount: 0,
+    });
+  });
+
+  it('handles usage 403 explicitly without changing credentials or usage', async () => {
+    const cached = makeCache(now, { usage: USAGE });
+    await writeCache(cached, cachePath);
 
     await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
-      now: () => frozenNow,
+      cachePath,
+      now: () => now,
+      fetchImpl: vi.fn().mockResolvedValue(response(403)),
     });
 
-    const result = readCache(cachePath(tmpDir));
-    expect(result).not.toBeNull();
-    expect(result!.consecutiveRateLimitCount).toBe(2);
-    expect(result!.nextRefreshAllowedAt).toBe(frozenNow + 300_000);
-    expect(result!.nextRefreshAllowedAt).toBeGreaterThan(result!.rateLimitedUntilMs);
+    expect(readCache(cachePath)).toMatchObject({
+      authState: 'cloudflare-blocked',
+      credentials: cached.credentials,
+      usage: USAGE,
+      nextRefreshAllowedAt: now + 60_000,
+    });
   });
 
-  it('12f. cooldown active from nextRefreshAllowedAt also prevents refresh', async () => {
-    const frozenNow = Date.now();
-    const cache = makeCache({
+  it('handles transient usage errors explicitly and sanitizes diagnostics', async () => {
+    const cached = makeCache(now, {
       credentials: {
-        accessToken: 'at-rl-backoff-only',
-        refreshToken: 'rt-rl-backoff-only',
-        expiresAt: frozenNow + 60 * 60_000,
+        accessToken: 'sensitive-access',
+        expiresAt: now + 60 * 60_000,
       },
-      rateLimitedUntilMs: frozenNow - 1_000,
-      nextRefreshAllowedAt: frozenNow + 45_000,
-      consecutiveRateLimitCount: 2,
+      usage: USAGE,
     });
-    await writeTestCache(tmpDir, cache);
-
-    let fetchCalled = false;
-    const mockFetch: typeof fetch = async () => {
-      fetchCalled = true;
-      return new Response('', { status: 200 });
-    };
+    await writeCache(cached, cachePath);
 
     await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
-      now: () => frozenNow,
+      cachePath,
+      now: () => now,
+      fetchImpl: vi.fn().mockRejectedValue(
+        new Error('network failed for sensitive-access'),
+      ),
     });
 
-    expect(fetchCalled).toBe(false);
-    const result = readCache(cachePath(tmpDir));
-    expect(result!.nextRefreshAllowedAt).toBe(frozenNow + 45_000);
-  });
+    const result = readCache(cachePath);
+    expect(result?.authState).toBe('ok');
+    expect(result?.usage).toEqual(USAGE);
+    expect(result?.lastErrorMessage).toBe('network failed for <redacted>');
+    expect(result?.nextRefreshAllowedAt).toBe(now + 60_000);
 
-  it('12d. cooldown active: runRefresh exits without making any fetch call', async () => {
-    const frozenNow = Date.now();
-    const cache = makeCache({
-      credentials: {
-        accessToken: 'at-still-cooling',
-        refreshToken: 'rt-still-cooling',
-        expiresAt: frozenNow + 60 * 60 * 1000,
-      },
-      rateLimitedUntilMs: frozenNow + 60_000, // 60s of cooldown remaining
-    });
-    await writeTestCache(tmpDir, cache);
-
-    let fetchCalled = false;
-    const mockFetch: typeof fetch = async () => {
-      fetchCalled = true;
-      return new Response('', { status: 200 });
-    };
-
+    const retry = vi.fn();
     await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
-      now: () => frozenNow,
+      cachePath,
+      now: () => now + 30_000,
+      fetchImpl: retry,
     });
-
-    expect(fetchCalled).toBe(false);
-    // Cache untouched.
-    const result = readCache(cachePath(tmpDir));
-    expect(result!.rateLimitedUntilMs).toBe(frozenNow + 60_000);
+    expect(retry).not.toHaveBeenCalled();
   });
 
-  // -------------------------------------------------------------------------
-  // Scenario 13: Network error during refresh (transient)
-  // -------------------------------------------------------------------------
-  it('13. transient error during refresh: authState stays ok, lastErrorMessage set', async () => {
-    const now = Date.now();
-    const cache = makeCache({
-      credentials: {
-        accessToken: 'at-transient',
-        refreshToken: 'rt-transient',
-        expiresAt: now + 2 * 60 * 1000, // near expiry
-      },
-    });
-    await writeTestCache(tmpDir, cache);
+  it('always exits zero and remains silent', async () => {
+    await writeCache(makeCache(now), cachePath);
 
-    // Simulate network failure (transient)
-    const mockFetch: typeof fetch = async () => {
-      throw new Error('ECONNRESET: connection reset by peer');
-    };
+    expect(await runRefresh([], {
+      cachePath,
+      now: () => now,
+      fetchImpl: vi.fn().mockResolvedValue(response(200, USAGE)),
+    })).toBe(0);
 
-    const exitCode = await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
-    });
-
-    expect(exitCode).toBe(0);
-    const result = readCache(cachePath(tmpDir));
-    expect(result).not.toBeNull();
-    expect(result!.authState).toBe('ok');
-    expect(result!.lastErrorMessage).not.toBeNull();
-    expect(result!.lastErrorMessage).toContain('ECONNRESET');
-  });
-
-  // -------------------------------------------------------------------------
-  // Scenario 14: stdout/stderr silence
-  // -------------------------------------------------------------------------
-  it('14. stdout/stderr silence: no writes to process.stdout or process.stderr in normal flows', async () => {
-    const now = Date.now();
-    const cache = makeCache({
-      credentials: {
-        accessToken: 'at-silent',
-        refreshToken: 'rt-silent',
-        expiresAt: now + 60 * 60 * 1000, // fresh
-      },
-    });
-    await writeTestCache(tmpDir, cache);
-
-    const mockFetch = buildFetchMock([
-      { status: 200, body: MOCK_USAGE },
-    ]);
-
-    await runRefresh([], {
-      cachePath: cachePath(tmpDir),
-      fetchImpl: mockFetch,
-    });
-
-    expect(stdoutCallCount).toBe(0);
-    expect(stderrCallCount).toBe(0);
-  });
-
-  // -------------------------------------------------------------------------
-  // Scenario 15: Exit code is 0 in all scenarios
-  // -------------------------------------------------------------------------
-  it('15. exit code is always 0 across all cases', async () => {
-    const now = Date.now();
-
-    // Case A: happy path
-    {
-      const dir = makeTmpDir();
-      try {
-        const c = makeCache({ credentials: { accessToken: 'a', refreshToken: 'r', expiresAt: now + 3600_000 } });
-        await writeCache(c, cachePath(dir));
-        const code = await runRefresh([], {
-          cachePath: cachePath(dir),
-          fetchImpl: buildFetchMock([{ status: 200, body: MOCK_USAGE }]),
-        });
-        expect(code).toBe(0);
-      } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-      }
-    }
-
-    // Case B: cache missing
-    {
-      const dir = makeTmpDir();
-      try {
-        const code = await runRefresh([], { cachePath: cachePath(dir) });
-        expect(code).toBe(0);
-      } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-      }
-    }
-
-    // Case C: authState fatal
-    {
-      const dir = makeTmpDir();
-      try {
-        const c = makeCache({ authState: 'fatal' });
-        await writeCache(c, cachePath(dir));
-        const code = await runRefresh([], { cachePath: cachePath(dir) });
-        expect(code).toBe(0);
-      } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-      }
-    }
-
-    // Case D: refresh auth-fatal
-    {
-      const dir = makeTmpDir();
-      try {
-        const c = makeCache({ credentials: { accessToken: 'a', refreshToken: 'r', expiresAt: now + 2 * 60_000 } });
-        await writeCache(c, cachePath(dir));
-        const code = await runRefresh([], {
-          cachePath: cachePath(dir),
-          fetchImpl: buildFetchMock([{ status: 401 }]),
-        });
-        expect(code).toBe(0);
-      } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-      }
-    }
-
-    // Case E: fetchUsage cloudflare-blocked
-    {
-      const dir = makeTmpDir();
-      try {
-        const c = makeCache({ credentials: { accessToken: 'a', refreshToken: 'r', expiresAt: now + 3600_000 } });
-        await writeCache(c, cachePath(dir));
-        const code = await runRefresh([], {
-          cachePath: cachePath(dir),
-          fetchImpl: buildFetchMock([{ status: 403 }]),
-        });
-        expect(code).toBe(0);
-      } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-      }
-    }
+    expect(stdout).not.toHaveBeenCalled();
+    expect(stderr).not.toHaveBeenCalled();
   });
 });
