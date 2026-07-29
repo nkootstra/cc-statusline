@@ -14,13 +14,24 @@ Claude Code only runs custom statusline commands after the current workspace is 
 
 ### Enterprise authentication
 
-Enterprise setup validates Claude Code's current credential against the usage API. If the credential is missing or rejected during an interactive install, cc-statusline checks `claude auth status` to explain what it found, then starts the official:
+Enterprise setup validates Claude Code's current credential against the usage API. If the credential is missing, expired, or rejected during an interactive install, cc-statusline checks `claude auth status` to explain what it found, then starts the official:
 
 ```bash
 claude auth login
 ```
 
 The status command is explanatory only. A successful usage API response is authoritative, and setup does not persist credentials until that validation succeeds.
+
+| Enterprise init condition | Behavior |
+|---|---|
+| Valid, unexpired v4 cache with no `--force` or `--credentials-path` | Reuses the cache without credential discovery, network access, or login. |
+| Missing, expired, or usage-API-rejected Claude Code credential in an interactive terminal | Checks status, starts one login, rediscovers the credential, and validates it before installation. |
+| Authentication required with `--non-interactive` or without a TTY | Starts no Claude command and prints the manual login and install commands. |
+| `--credentials-path=<path>` | Validates only that authoritative file. It never starts Claude login or falls back to automatic discovery. |
+| Cloudflare block, rate limit, or transient network failure | Reports a retryable network failure without starting an unnecessary login. |
+| Cancelled or failed login, missing post-login credentials, or failed post-login validation | Exits without activating a replacement and preserves any existing cache, installed bundle, and statusline setting. |
+
+`--plan enterprise` selects the plan without disabling interactive authentication. `--force` bypasses a valid-looking cache and revalidates the current credential; it starts login only when that credential is missing, expired, or rejected.
 
 For terminals or automation where prompts are unavailable, authenticate first and then run the installer explicitly:
 
@@ -29,7 +40,7 @@ claude auth login
 npx @nkootstra/cc-statusline --plan enterprise --non-interactive
 ```
 
-`--non-interactive` never starts login or prompts. It requires `--plan`; add `--force` if an existing statusline command must be replaced.
+`--non-interactive` never starts login or prompts. It requires `--plan`; add `--force` when the cached credential must be revalidated or an existing statusline command must be replaced.
 
 Enterprise users upgrading from a cache version before schema v4 must run Enterprise init once:
 

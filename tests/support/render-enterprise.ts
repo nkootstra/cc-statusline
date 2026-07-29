@@ -114,7 +114,6 @@ export async function runWithCache(
   extra: {
     now?: () => number;
     bundlePath?: string;
-    platformOverride?: NodeJS.Platform;
   } = {},
 ): Promise<{
   output: string;
@@ -137,7 +136,6 @@ export async function runWithCache(
           cachePath,
           bundlePath: extra.bundlePath ?? '/bundle.js',
           now: extra.now ?? (() => Date.now()),
-          platformOverride: extra.platformOverride,
           spawnRefresh: (command, args, opts) => {
             calls.push({ command, args, opts });
           },

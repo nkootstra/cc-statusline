@@ -112,7 +112,6 @@ describe('background refresh integration', () => {
         cachePath,
         bundlePath: '/bundle.js',
         now: () => now,
-        platformOverride: 'linux' as const,
         spawnRefresh: (
           command: string,
           args: string[],
@@ -155,7 +154,6 @@ describe('background refresh integration', () => {
       cachePath,
       bundlePath: '/bundle.js',
       now: () => now,
-      platformOverride: 'linux' as const,
       spawnRefresh: () => {
         attempts += 1;
         if (attempts === 1) throw new Error('spawn failed');
@@ -186,25 +184,22 @@ describe('background refresh integration', () => {
 });
 
 describe('refresh process boundary', () => {
-  async function captureSpawnForPlatform(
-    platform: NodeJS.Platform,
-    bundlePath: string,
-  ): Promise<SpawnCall> {
+  async function captureRefreshSpawn(bundlePath: string): Promise<SpawnCall> {
     const now = Date.now();
     const { spawnCalls } = await runWithCache(
       makeCacheWithUsage({}, {
         lastUsageRefreshAt: now - 5 * 60_000,
       }),
       loadFixture('stdin-enterprise.json'),
-      { now: () => now, bundlePath, platformOverride: platform },
+      { now: () => now, bundlePath },
     );
     const call = spawnCalls[0];
     expect(call).toBeDefined();
     return call!;
   }
 
-  it('uses detached Node on POSIX', async () => {
-    const call = await captureSpawnForPlatform('linux', '/bundle.js');
+  it('uses detached Node directly', async () => {
+    const call = await captureRefreshSpawn('/bundle.js');
 
     expect(call.command).toBe(process.execPath);
     expect(call.args).toEqual([
@@ -214,25 +209,28 @@ describe('refresh process boundary', () => {
     ]);
     expect(call.opts).toMatchObject({
       detached: true,
+      shell: false,
       stdio: 'ignore',
+      windowsHide: true,
     });
   });
 
-  it('uses a minimized detached command on Windows', async () => {
-    const call = await captureSpawnForPlatform('win32', 'C:\\bundle.js');
+  it('uses detached Node without a shell for Windows paths containing metacharacters', async () => {
+    const bundlePath = 'C:\\Users\\A&B\\cc statusline.js';
+    const call = await captureRefreshSpawn(bundlePath);
 
-    expect(call.command).toBe('cmd.exe');
+    expect(call.command).toBe(process.execPath);
     expect(call.args).toEqual([
-      '/c',
-      'start',
-      '/b',
-      '/min',
-      process.execPath,
-      'C:\\bundle.js',
+      bundlePath,
       'refresh',
       expect.stringMatching(/^--claimed-at=\d+$/),
     ]);
-    expect(call.opts.stdio).toBe('ignore');
+    expect(call.opts).toMatchObject({
+      detached: true,
+      shell: false,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
   });
 
   it('passes only the required environment variables', async () => {

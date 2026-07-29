@@ -61,7 +61,13 @@ function formatRateLimitedHint(msUntilReset: number): string {
  * Low-level spawn abstraction: mirrors the child_process.spawn signature for
  * the pieces we care about, so tests can capture exactly what would be executed.
  */
-export type SpawnFn = (command: string, args: string[], opts: SpawnOptions) => void;
+type SafeSpawnOptions = SpawnOptions & { shell: false };
+
+export type SpawnFn = (
+  command: string,
+  args: string[],
+  opts: SafeSpawnOptions,
+) => void;
 
 export interface RenderEnterpriseDeps {
   cachePath?: string;
@@ -69,7 +75,6 @@ export interface RenderEnterpriseDeps {
   /** Override the spawn call for testing. Receives (command, args, opts). */
   spawnRefresh?: SpawnFn;
   now?: () => number;
-  platformOverride?: NodeJS.Platform;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,12 +259,14 @@ function buildMinimalEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function defaultSpawnFn(platform: NodeJS.Platform): SpawnFn {
-  return (command: string, args: string[], opts: SpawnOptions): void => {
-    const child = spawn(command, args, { ...opts, env: buildMinimalEnv(), shell: false });
-    if (platform !== 'win32') {
-      child.unref();
-    }
+function defaultSpawnFn(): SpawnFn {
+  return (command: string, args: string[], opts: SafeSpawnOptions): void => {
+    const child = spawn(command, args, {
+      ...opts,
+      env: buildMinimalEnv(),
+      shell: false,
+    });
+    child.unref();
   };
 }
 
@@ -408,9 +415,8 @@ export async function runRenderEnterprise(
   const cachePath = deps.cachePath ?? defaultCachePath();
   const bundlePath = deps.bundlePath ?? __filename;
   const now = deps.now ?? (() => Date.now());
-  const platform = deps.platformOverride ?? process.platform;
   const staleThresholdMs = getStaleThresholdMs();
-  const spawnFn = deps.spawnRefresh ?? defaultSpawnFn(platform);
+  const spawnFn = deps.spawnRefresh ?? defaultSpawnFn();
 
   // Step 1: Read stdin.
   const raw = await readStream(stdinSource);
@@ -448,31 +454,13 @@ export async function runRenderEnterprise(
       const minimalEnv = buildMinimalEnv();
       const claimArg = `--claimed-at=${claimedAt}`;
       try {
-        if (platform === 'win32') {
-          spawnFn(
-            'cmd.exe',
-            [
-              '/c',
-              'start',
-              '/b',
-              '/min',
-              process.execPath,
-              bundlePath,
-              'refresh',
-              claimArg,
-            ],
-            {
-              stdio: 'ignore',
-              env: minimalEnv,
-            },
-          );
-        } else {
-          spawnFn(process.execPath, [bundlePath, 'refresh', claimArg], {
-            detached: true,
-            stdio: 'ignore',
-            env: minimalEnv,
-          });
-        }
+        spawnFn(process.execPath, [bundlePath, 'refresh', claimArg], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+          env: minimalEnv,
+          shell: false,
+        });
       } catch {
         await releaseRefreshClaim(cachePath, claimedAt);
       }
