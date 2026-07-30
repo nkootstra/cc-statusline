@@ -268,7 +268,7 @@ async function recoverAutomaticCredentials(
     }
   }
 
-  if (credentials !== null) {
+  if (shouldRetryWithLogin && credentials !== null) {
     const validation = await validateCandidate(
       credentials,
       options.now(),
