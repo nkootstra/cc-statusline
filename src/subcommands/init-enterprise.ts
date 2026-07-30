@@ -1,5 +1,10 @@
 import type { SpawnSyncOptions } from 'node:child_process';
-import { CredentialNotFoundError, discover } from '../credentials/discover';
+import { join } from 'node:path';
+import {
+  CredentialNotFoundError,
+  discover,
+  readCredentialFile,
+} from '../credentials/discover';
 import {
   canonicalizeFileCredentialSource,
   loadCredentialSource,
@@ -56,6 +61,39 @@ type CandidateValidation =
 
 interface ClaudeAuthStatusJson {
   loggedIn?: unknown;
+}
+
+function discoverConfigDir(
+  homedir: string,
+  discoverOptions: Parameters<typeof discover>[0],
+): string {
+  return discoverOptions?.claudeConfigDirOverride
+    ?? process.env['CLAUDE_CONFIG_DIR']
+    ?? join(homedir, '.claude');
+}
+
+async function recoverFromCredentialFiles(
+  homedir: string,
+  discoverOptions: Parameters<typeof discover>[0],
+): Promise<OAuthCredentials> {
+  const configDir = discoverConfigDir(homedir, discoverOptions);
+
+  const dotCredentialsPath = join(configDir, '.credentials.json');
+  const fromDotCredentials = await readCredentialFile(dotCredentialsPath);
+  if (fromDotCredentials !== null) {
+    return fromDotCredentials;
+  }
+
+  const credentialsPath = join(configDir, 'credentials.json');
+  const fromCredentials = await readCredentialFile(credentialsPath);
+  if (fromCredentials !== null) {
+    return fromCredentials;
+  }
+
+  throw new CredentialNotFoundError([
+    dotCredentialsPath,
+    credentialsPath,
+  ]);
 }
 
 function claudeEnvironment(
@@ -191,18 +229,46 @@ async function recoverAutomaticCredentials(
   | { kind: 'exit'; code: number }
 > {
   let credentials: OAuthCredentials | null = null;
+  let shouldRetryWithLogin = false;
   try {
     credentials = await options.discoverFn(options.discoverOptions);
   } catch (error: unknown) {
     if (!(error instanceof CredentialNotFoundError)) {
-      process.stderr.write(
-        'init: could not read Claude Code credentials.\n',
-      );
-      return { kind: 'exit', code: 3 };
+      shouldRetryWithLogin = true;
     }
   }
 
   if (credentials !== null) {
+    const validation = await validateCandidate(
+      credentials,
+      options.now(),
+      options.fetchImpl,
+    );
+    if (validation.kind === 'success') {
+      return { kind: 'success', credentials, usage: validation.usage };
+    }
+    if (validation.kind === 'network-failure') {
+      printNetworkFailure(validation);
+      return { kind: 'exit', code: 4 };
+    }
+  }
+
+  if (shouldRetryWithLogin) {
+    process.stderr.write('init: could not read Claude Code credentials.\n');
+  }
+
+  if (credentials === null && shouldRetryWithLogin) {
+    try {
+      credentials = await recoverFromCredentialFiles(
+        options.homedir,
+        options.discoverOptions,
+      );
+    } catch {
+      // continue to interactive recovery.
+    }
+  }
+
+  if (shouldRetryWithLogin && credentials !== null) {
     const validation = await validateCandidate(
       credentials,
       options.now(),
@@ -265,10 +331,17 @@ async function recoverAutomaticCredentials(
   try {
     credentials = await options.discoverFn(options.discoverOptions);
   } catch {
-    process.stderr.write(
-      'init: Claude Code credentials were not available after login.\n',
-    );
-    return { kind: 'exit', code: 3 };
+    try {
+      credentials = await recoverFromCredentialFiles(
+        options.homedir,
+        options.discoverOptions,
+      );
+    } catch {
+      process.stderr.write(
+        'init: Claude Code credentials were not available after login.\n',
+      );
+      return { kind: 'exit', code: 3 };
+    }
   }
 
   const validation = await validateCandidate(

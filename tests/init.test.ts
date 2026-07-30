@@ -361,13 +361,19 @@ describe('guided Claude Code authentication recovery', () => {
     expect(fs.readFileSync(cachePath(tmpDir), 'utf8')).not.toContain('refreshToken');
   });
 
-  it('does not launch login when initial discovery fails for a reason other than missing credentials', async () => {
+  it('falls back to interactive login when initial discovery fails for a reason other than missing credentials', async () => {
     const tmpDir = makeTmpDir();
-    await writeCache(makeCache(), cachePath(tmpDir));
-    const before = fileHash(cachePath(tmpDir));
     const rawError = `malformed credential ${MOCK_CREDENTIALS.accessToken}`;
-    const discoverImpl = vi.fn().mockRejectedValue(new Error(rawError));
-    const spawnClaude = vi.fn();
+    const discoverImpl = vi.fn()
+      .mockRejectedValueOnce(new Error(rawError))
+      .mockResolvedValueOnce(MOCK_CREDENTIALS);
+    const spawnClaude = vi.fn((
+      _command: string,
+      argv: readonly string[],
+      _options: Parameters<NonNullable<InitDeps['spawnClaude']>>[2],
+    ) => argv[1] === 'status'
+      ? { status: 0, signal: null, stdout: '{"loggedIn":false}' }
+      : { status: 0, signal: null });
     const { code, output } = await captureStderr(() =>
       runInit(['--plan=enterprise', '--force'], baseDeps(tmpDir, {
         isInteractive: true,
@@ -376,11 +382,15 @@ describe('guided Claude Code authentication recovery', () => {
       })),
     );
 
-    expect(code).toBe(3);
+    expect(code).toBe(0);
     expect(output).toBe('init: could not read Claude Code credentials.\n');
     expect(output).not.toContain(rawError);
-    expect(spawnClaude).not.toHaveBeenCalled();
-    expect(fileHash(cachePath(tmpDir))).toBe(before);
+    expect(discoverImpl).toHaveBeenCalledTimes(2);
+    expect(spawnClaude).toHaveBeenCalledTimes(2);
+    expect(spawnClaude.mock.calls.map((call) => call[1])).toEqual([
+      ['auth', 'status'],
+      ['auth', 'login'],
+    ]);
   });
 
   it.each([
