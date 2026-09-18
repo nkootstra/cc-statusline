@@ -688,3 +688,13 @@ describe('error class contracts', () => {
     expect(err).toBeInstanceOf(SettingsLockedError);
   });
 });
+
+describe('readSettings rejects non-object documents', () => {
+  it.each(['null', '[]', '"text"', '42'])('throws MalformedSettingsError for %s', (content) => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'cc-statusline-settings-shape-'));
+    const filePath = path.join(dir, 'settings.json');
+    writeFileSync(filePath, content);
+
+    expect(() => readSettings(filePath)).toThrow(MalformedSettingsError);
+  });
+});
