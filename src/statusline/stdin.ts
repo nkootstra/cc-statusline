@@ -195,3 +195,34 @@ export function parseStdin(input: string): StatuslineInput | null {
     rate_limits: normalizeRateLimits(raw['rate_limits']),
   };
 }
+
+export function readStdin(
+  source: NodeJS.ReadableStream,
+  timeoutMs = 1000,
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let done = false;
+
+    const finish = (value: string | null): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+
+    const timer = setTimeout(() => {
+      finish(null);
+      // A still-open stdin pipe keeps the event loop alive after we answer,
+      // so the render process would outlive its output until Claude Code kills it.
+      const destroy = (source as { destroy?: () => void }).destroy;
+      if (typeof destroy === 'function') destroy.call(source);
+    }, timeoutMs);
+
+    source.on('data', (chunk: Buffer | string) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
+    source.on('end', () => finish(Buffer.concat(chunks).toString('utf8')));
+    source.on('error', () => finish(null));
+  });
+}

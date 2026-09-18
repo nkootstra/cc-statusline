@@ -7,7 +7,7 @@ import {
   runRenderEnterprise,
 } from '../src/subcommands/render-enterprise';
 import { STALE_MARKER } from '../src/statusline/format';
-import { writeCache } from '../src/cache/store';
+import { readCache, writeCache } from '../src/cache/store';
 import {
   captureStdout,
   loadFixture,
@@ -183,6 +183,38 @@ describe('background refresh integration', () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('releases the claim when the spawned child emits an error', async () => {
+    const now = Date.now();
+    const tempDir = mkdtempSync(join(tmpdir(), 'cc-statusline-render-spawn-err-'));
+    const cachePath = join(tempDir, 'cache.json');
+    await writeCache(
+      makeCacheWithUsage({}, { lastUsageRefreshAt: now - 5 * 60_000 }),
+      cachePath,
+    );
+
+    try {
+      await captureStdout(() =>
+        runRenderEnterprise(
+          [],
+          makeStream(loadFixture('stdin-enterprise.json')),
+          {
+            cachePath,
+            bundlePath: '/bundle.js',
+            now: () => now,
+            spawnRefresh: (_command, _args, _opts, onError) => {
+              onError?.(new Error('spawn EAGAIN'));
+            },
+          },
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(readCache(cachePath)?.lastRefreshStartedAt).toBe(0);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('refresh process boundary', () => {
@@ -253,8 +285,33 @@ describe('refresh process boundary', () => {
     expect(env?.['AWS_SECRET_ACCESS_KEY']).toBeUndefined();
     expect(env?.['CLAUDE_CONFIG_DIR']).toBe('/my/claude');
     expect(Object.keys(env ?? {}).every((key) =>
-      ['PATH', 'HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR'].includes(key),
+      [
+        'PATH', 'HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR',
+        'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
+        'NODE_USE_ENV_PROXY', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
+        'NODE_TLS_REJECT_UNAUTHORIZED', 'NODE_OPTIONS',
+      ].includes(key),
     )).toBe(true);
+  });
+
+  it('forwards proxy and trust-store variables so the child can reach the API', async () => {
+    vi.stubEnv('NODE_EXTRA_CA_CERTS', '/etc/ssl/corp-ca.pem');
+    vi.stubEnv('HTTPS_PROXY', 'http://proxy.corp:3128');
+    vi.stubEnv('NODE_USE_ENV_PROXY', '1');
+    vi.stubEnv('AWS_SECRET_ACCESS_KEY', 'super-secret-key');
+    const now = Date.now();
+
+    const { spawnCalls } = await runWithCache(
+      makeCacheWithUsage({}, { lastUsageRefreshAt: now - 5 * 60_000 }),
+      loadFixture('stdin-enterprise.json'),
+      { now: () => now },
+    );
+
+    const env = spawnCalls[0]?.opts.env;
+    expect(env?.['NODE_EXTRA_CA_CERTS']).toBe('/etc/ssl/corp-ca.pem');
+    expect(env?.['HTTPS_PROXY']).toBe('http://proxy.corp:3128');
+    expect(env?.['NODE_USE_ENV_PROXY']).toBe('1');
+    expect(env?.['AWS_SECRET_ACCESS_KEY']).toBeUndefined();
   });
 });
 
