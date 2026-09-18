@@ -1,14 +1,5 @@
-import { runInit } from './subcommands/init';
-import { runUninstall } from './subcommands/uninstall';
-import { runRefresh } from './subcommands/refresh';
-import { runRenderPromax } from './subcommands/render-promax';
-import { runRenderEnterprise } from './subcommands/render-enterprise';
-import { runDoctor } from './subcommands/doctor';
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports
 const PKG_VERSION: string = ((): string => {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const pkg = require('../package.json') as { version: string };
     return pkg.version;
   } catch {
@@ -41,23 +32,38 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
+  // Each subcommand is imported on demand so the render paths, which run on
+  // every prompt, never evaluate the installer, refresher, or their deps.
   if (cmd?.startsWith('--') && cmd !== '--help') {
+    const { runInit } = await import('./subcommands/init');
     return runInit(argv.slice(2));
   }
 
   switch (cmd) {
-    case 'init':
+    case 'init': {
+      const { runInit } = await import('./subcommands/init');
       return runInit(argv.slice(3));
-    case 'uninstall':
+    }
+    case 'uninstall': {
+      const { runUninstall } = await import('./subcommands/uninstall');
       return runUninstall(argv.slice(3));
-    case 'refresh':
+    }
+    case 'refresh': {
+      const { runRefresh } = await import('./subcommands/refresh');
       return runRefresh(argv.slice(3));
-    case 'render-promax':
+    }
+    case 'render-promax': {
+      const { runRenderPromax } = await import('./subcommands/render-promax');
       return runRenderPromax();
-    case 'render-enterprise':
+    }
+    case 'render-enterprise': {
+      const { runRenderEnterprise } = await import('./subcommands/render-enterprise');
       return runRenderEnterprise();
-    case 'doctor':
+    }
+    case 'doctor': {
+      const { runDoctor } = await import('./subcommands/doctor');
       return runDoctor(argv.slice(3));
+    }
     case undefined:
     case '-h':
     case '--help':

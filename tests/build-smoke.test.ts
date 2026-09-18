@@ -101,13 +101,26 @@ describe('build smoke', () => {
     expect(result.stderr).toContain('Unknown command');
   });
 
-  it('cold-starts within the platform threshold', () => {
+  it('cold-starts within the platform threshold on the render path', () => {
     const threshold = process.platform === 'win32' ? 250 : 150;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const payload = JSON.stringify({
+      model: { id: 'claude-opus-4-7', display_name: 'Opus 4.7' },
+      cost: { total_cost_usd: 0 },
+      rate_limits: {
+        five_hour: { used_percentage: 10, resets_at: nowSec + 3_600 },
+        seven_day: { used_percentage: 20, resets_at: nowSec + 7_200 },
+      },
+    });
     const samples = Array.from({ length: 3 }, () => {
       const start = process.hrtime.bigint();
-      const result = spawnSync(process.execPath, [BUNDLE], { encoding: 'utf8' });
+      const result = spawnSync(process.execPath, [BUNDLE, 'render-promax'], {
+        encoding: 'utf8',
+        input: payload,
+      });
       const elapsedMs = Number(process.hrtime.bigint() - start) / 1_000_000;
       expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Opus 4.7');
       return elapsedMs;
     });
     const fastest = Math.min(...samples);

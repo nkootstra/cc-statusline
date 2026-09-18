@@ -360,3 +360,15 @@ describe('visual grammar — no forbidden separators in formatted output', () =>
     expect(SEP).not.toContain(' - ');
   });
 });
+
+describe('formatResetHint avoids ICU initialisation', () => {
+  it('formats a future-day hint without constructing Intl.DateTimeFormat', () => {
+    const intlSpy = vi.spyOn(Intl, 'DateTimeFormat');
+    const futureMs = Date.now() + 3 * 24 * 60 * 60 * 1000;
+
+    const result = formatResetHint(Math.floor(futureMs / 1000));
+
+    expect(result).toMatch(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d{2}:\d{2}$/);
+    expect(intlSpy).not.toHaveBeenCalled();
+  });
+});
