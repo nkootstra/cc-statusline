@@ -12,6 +12,7 @@ import type {
   FetchUsageResult,
   UsageResponse,
 } from '../oauth/types';
+import { refreshCooldownRemainingMs } from './enterprise-refresh-policy';
 
 const AUTH_STATUS_TIMEOUT_MS = 10_000;
 
@@ -104,7 +105,9 @@ function hasUsableCachedCredentials(cache: Cache, now: number): boolean {
     cache.authState === 'ok' &&
     cache.credentials.accessToken.length > 0 &&
     Number.isFinite(cache.credentials.expiresAt) &&
-    cache.credentials.expiresAt > now
+    cache.credentials.expiresAt > now &&
+    cache.lastErrorMessage === null &&
+    refreshCooldownRemainingMs(cache, now) === 0
   );
 }
 
