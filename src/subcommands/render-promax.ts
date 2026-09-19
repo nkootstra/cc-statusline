@@ -1,5 +1,4 @@
-import { Readable } from 'node:stream';
-import { parseStdin } from '../statusline/stdin';
+import { parseStdin, readStdin } from '../statusline/stdin';
 import {
   SEP,
   MISSING,
@@ -9,50 +8,6 @@ import {
   formatOptionalHint,
   chooseLayout,
 } from '../statusline/format';
-
-// ---------------------------------------------------------------------------
-// Stdin reader
-// ---------------------------------------------------------------------------
-
-/**
- * Read all data from `source` to a string, with a hard 1-second timeout.
- *
- * Returns `null` if EOF is not reached within the timeout (something is wrong —
- * Claude Code closes stdin promptly after writing; a long wait means a hang).
- */
-function readStream(source: NodeJS.ReadableStream): Promise<string | null> {
-  return new Promise((resolve) => {
-    const chunks: Buffer[] = [];
-    let done = false;
-
-    const timer = setTimeout(() => {
-      if (!done) {
-        done = true;
-        resolve(null);
-      }
-    }, 1000);
-
-    source.on('data', (chunk: Buffer | string) => {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    });
-
-    source.on('end', () => {
-      if (!done) {
-        done = true;
-        clearTimeout(timer);
-        resolve(Buffer.concat(chunks).toString('utf8'));
-      }
-    });
-
-    source.on('error', () => {
-      if (!done) {
-        done = true;
-        clearTimeout(timer);
-        resolve(null);
-      }
-    });
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Segment builders
@@ -145,7 +100,7 @@ export async function runRenderPromax(
   _args: string[] = [],
   stdinSource: NodeJS.ReadableStream = process.stdin,
 ): Promise<number> {
-  const raw = await readStream(stdinSource);
+  const raw = await readStdin(stdinSource);
 
   if (raw === null) {
     // Timeout — fail blank per blank-on-failure semantics.

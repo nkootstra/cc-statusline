@@ -393,7 +393,9 @@ describe('runRefresh', () => {
     const result = readCache(cachePath);
     expect(result?.credentials).toEqual(cached.credentials);
     expect(result?.usage).toEqual(USAGE);
-    expect(result?.authState).toBe('fatal');
+    expect(result?.authState).toBe('ok');
+    expect(result?.nextRefreshAllowedAt).toBe(now + 60_000);
+    expect(result?.lastErrorMessage).toContain('credential source reload failed');
   });
 
   it('reloads exactly the recorded explicit file source', async () => {

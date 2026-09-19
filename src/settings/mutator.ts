@@ -92,11 +92,16 @@ export function readSettings(filePath?: string): SettingsFile {
     throw err;
   }
 
+  let parsed: unknown;
   try {
-    return JSON.parse(raw) as SettingsFile;
+    parsed = JSON.parse(raw);
   } catch (parseErr) {
     throw new MalformedSettingsError(target, parseErr);
   }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new MalformedSettingsError(target);
+  }
+  return parsed as SettingsFile;
 }
 
 // ---------------------------------------------------------------------------

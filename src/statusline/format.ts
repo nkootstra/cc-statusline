@@ -218,26 +218,24 @@ export function formatResetHint(
     return '<5m';
   }
 
-  // Format time as HH:MM using Intl for locale correctness.
-  const timeFormatter = new Intl.DateTimeFormat(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-
   const nowDate = new Date(now);
   const isSameDay =
     resetDate.getFullYear() === nowDate.getFullYear() &&
     resetDate.getMonth() === nowDate.getMonth() &&
     resetDate.getDate() === nowDate.getDate();
 
-  const hhmm = timeFormatter.format(resetDate);
+  const hhmm = formatClock(resetDate);
+  if (isSameDay) return hhmm;
 
-  if (isSameDay) {
-    return hhmm;
-  }
+  return `${WEEKDAYS[resetDate.getDay()] ?? ''} ${hhmm}`;
+}
 
-  const weekdayFormatter = new Intl.DateTimeFormat(undefined, { weekday: 'short' });
-  const weekday = weekdayFormatter.format(resetDate);
-  return `${weekday} ${hhmm}`;
+// Intl.DateTimeFormat costs ~12 ms of ICU initialisation per fresh process,
+// which is a third of the cold-start budget for a value we render once.
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
+function formatClock(date: Date): string {
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
 }

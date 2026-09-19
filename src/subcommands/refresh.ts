@@ -296,7 +296,8 @@ async function persistNonSuccess(
             candidate,
           );
           current.rateLimitedUntilMs =
-            observedAt + result.retryAfterSeconds * 1000;
+            observedAt +
+            Math.min(result.retryAfterSeconds * 1000, RATE_LIMIT_BACKOFF_MAX_MS);
           current.nextRefreshAllowedAt = nextRateLimitCooldownUntil(
             observedAt,
             result.retryAfterSeconds,
@@ -491,6 +492,20 @@ export async function runRefresh(
         return 0;
       }
       candidate = loaded.credentials;
+      if (candidate.expiresAt <= now()) {
+        const persisted = await persistSourceFailure(
+          startingCredentials,
+          startedAt,
+          cachePath,
+          'Access token expired; waiting for Claude Code to renew it',
+          now,
+        );
+        await logger.log({
+          event: 'refresh.completed',
+          outcome: persisted ? 'awaiting-renewal' : 'stale-discarded',
+        });
+        return 0;
+      }
     } else {
       await logger.log({
         event: 'credential-source.reload.decision',
@@ -515,15 +530,16 @@ export async function runRefresh(
         logger,
       );
       if (loaded.kind === 'failure') {
-        const persisted = await persistFinal401(
+        const persisted = await persistSourceFailure(
           startingCredentials,
           startedAt,
           cachePath,
-          usageResult.reason,
+          `Usage fetch auth-fatal: ${usageResult.reason}; credential source reload failed: ${loaded.message}`,
+          now,
         );
         await logger.log({
           event: 'refresh.completed',
-          outcome: persisted ? 'auth-fatal' : 'stale-discarded',
+          outcome: persisted ? 'source-failure' : 'stale-discarded',
         });
         return 0;
       }

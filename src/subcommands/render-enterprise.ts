@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { SpawnOptions } from 'node:child_process';
-import { parseStdin } from '../statusline/stdin';
+import { parseStdin, readStdin } from '../statusline/stdin';
 import {
   SEP,
   MISSING,
@@ -67,6 +67,7 @@ export type SpawnFn = (
   command: string,
   args: string[],
   opts: SafeSpawnOptions,
+  onError?: (err: Error) => void,
 ) => void;
 
 export interface RenderEnterpriseDeps {
@@ -75,44 +76,6 @@ export interface RenderEnterpriseDeps {
   /** Override the spawn call for testing. Receives (command, args, opts). */
   spawnRefresh?: SpawnFn;
   now?: () => number;
-}
-
-// ---------------------------------------------------------------------------
-// Stdin reader (mirrors render-promax.ts)
-// ---------------------------------------------------------------------------
-
-function readStream(source: NodeJS.ReadableStream): Promise<string | null> {
-  return new Promise((resolve) => {
-    const chunks: Buffer[] = [];
-    let done = false;
-
-    const timer = setTimeout(() => {
-      if (!done) {
-        done = true;
-        resolve(null);
-      }
-    }, 1000);
-
-    source.on('data', (chunk: Buffer | string) => {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    });
-
-    source.on('end', () => {
-      if (!done) {
-        done = true;
-        clearTimeout(timer);
-        resolve(Buffer.concat(chunks).toString('utf8'));
-      }
-    });
-
-    source.on('error', () => {
-      if (!done) {
-        done = true;
-        clearTimeout(timer);
-        resolve(null);
-      }
-    });
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -250,22 +213,45 @@ function buildUsageSegment(
 // Default spawn implementation
 // ---------------------------------------------------------------------------
 
+// The detached refresh child must reach the usage API through the same
+// proxy and trust store the parent was started with; everything else
+// (cloud credentials, tokens in env) is deliberately withheld.
+const REFRESH_ENV_ALLOWLIST = [
+  'PATH',
+  'HOME',
+  'USERPROFILE',
+  'CLAUDE_CONFIG_DIR',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'NODE_USE_ENV_PROXY',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'NODE_TLS_REJECT_UNAUTHORIZED',
+  'NODE_OPTIONS',
+] as const;
+
 function buildMinimalEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
-  if (process.env['PATH'] !== undefined) env['PATH'] = process.env['PATH'];
-  if (process.env['HOME'] !== undefined) env['HOME'] = process.env['HOME'];
-  if (process.env['USERPROFILE'] !== undefined) env['USERPROFILE'] = process.env['USERPROFILE'];
-  if (process.env['CLAUDE_CONFIG_DIR'] !== undefined) env['CLAUDE_CONFIG_DIR'] = process.env['CLAUDE_CONFIG_DIR'];
+  for (const key of REFRESH_ENV_ALLOWLIST) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
   return env;
 }
 
 function defaultSpawnFn(): SpawnFn {
-  return (command: string, args: string[], opts: SafeSpawnOptions): void => {
+  return (command, args, opts, onError): void => {
     const child = spawn(command, args, {
       ...opts,
-      env: buildMinimalEnv(),
+      env: opts.env ?? buildMinimalEnv(),
       shell: false,
     });
+    child.on('error', (err) => onError?.(err));
     child.unref();
   };
 }
@@ -399,8 +385,8 @@ function renderLine(
 /**
  * `render-enterprise` subcommand entrypoint.
  *
- * Reads stdin and the cache file synchronously, formats one line, fires a
- * detached refresh subprocess if the cache is stale, prints to stdout, exits.
+ * Reads stdin and the cache file synchronously, formats one line, prints to
+ * stdout, then fires a detached refresh subprocess if the cache is stale.
  * Never makes a network call from the synchronous render path.
  *
  * @param _args       CLI args after the subcommand name (unused).
@@ -419,7 +405,7 @@ export async function runRenderEnterprise(
   const spawnFn = deps.spawnRefresh ?? defaultSpawnFn();
 
   // Step 1: Read stdin.
-  const raw = await readStream(stdinSource);
+  const raw = await readStdin(stdinSource);
 
   if (raw === null) {
     // Timeout — silent fail.
@@ -435,41 +421,42 @@ export async function runRenderEnterprise(
     return 0;
   }
 
-  // Step 2: Read cache synchronously.
   const cache = readCache(cachePath);
   const nowMs = now();
+
+  // Print before touching the lock so concurrent sessions never wait on
+  // each other to show a line; the refresh claim is a side effect.
+  process.stdout.write(renderLine(input, cache, nowMs, staleThresholdMs));
+
   const refreshDecision = decideEnterpriseRefresh(
     cache,
     nowMs,
     staleThresholdMs,
   );
+  if (refreshDecision.action !== 'spawn') return 0;
 
-  if (refreshDecision.action === 'spawn') {
-    const claimedAt = await claimRefresh(
-      cachePath,
-      nowMs,
-      staleThresholdMs,
+  const claimedAt = await claimRefresh(cachePath, nowMs, staleThresholdMs);
+  if (claimedAt === null) return 0;
+
+  const release = (): void => {
+    void releaseRefreshClaim(cachePath, claimedAt);
+  };
+  try {
+    spawnFn(
+      process.execPath,
+      [bundlePath, 'refresh', `--claimed-at=${claimedAt}`],
+      {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        env: buildMinimalEnv(),
+        shell: false,
+      },
+      release,
     );
-    if (claimedAt !== null) {
-      const minimalEnv = buildMinimalEnv();
-      const claimArg = `--claimed-at=${claimedAt}`;
-      try {
-        spawnFn(process.execPath, [bundlePath, 'refresh', claimArg], {
-          detached: true,
-          stdio: 'ignore',
-          windowsHide: true,
-          env: minimalEnv,
-          shell: false,
-        });
-      } catch {
-        await releaseRefreshClaim(cachePath, claimedAt);
-      }
-    }
+  } catch {
+    await releaseRefreshClaim(cachePath, claimedAt);
   }
-
-  // Step 4: Render.
-  const line = renderLine(input, cache, nowMs, staleThresholdMs);
-  process.stdout.write(line);
 
   return 0;
 }
