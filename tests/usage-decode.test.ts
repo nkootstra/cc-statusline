@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { decodeUsageResponse, modelScopedWindows } from '../src/oauth/usage';
+import { decodeUsage, decodeUsageResponse, modelScopedWindows } from '../src/oauth/usage';
 
 const fixture = JSON.parse(
   readFileSync(resolve(__dirname, 'fixtures', 'usage-response.json'), 'utf8'),
@@ -13,6 +13,63 @@ const FABLE_ROW = {
   resets_at: '2026-05-10T00:00:00.000Z',
   scope: { model: { display_name: 'Fable' } },
 };
+
+describe('decodeUsage', () => {
+  it('returns the same usage as decodeUsageResponse for the fixture', () => {
+    expect(decodeUsage(fixture)).toEqual({
+      kind: 'ok',
+      usage: decodeUsageResponse(fixture),
+    });
+  });
+
+  it.each([
+    ['body', 'not-an-object'],
+    ['five_hour', { ...fixture, five_hour: 'nope' }],
+    ['seven_day', { ...fixture, seven_day: { utilization: '67' } }],
+    ['seven_day_sonnet', { ...fixture, seven_day_sonnet: [] }],
+    ['seven_day_opus', { ...fixture, seven_day_opus: { resets_at: 5 } }],
+    ['extra_usage', { ...fixture, extra_usage: { is_enabled: 'yes' } }],
+  ])('names %s as the field that could not be decoded', (field, body) => {
+    expect(decodeUsage(body)).toEqual({ kind: 'invalid', field });
+    expect(decodeUsageResponse(body)).toBeNull();
+  });
+});
+
+describe('decodeUsageResponse — null fields', () => {
+  // Observed live on a Max account with extra usage switched off: the block
+  // is present with is_enabled false and every credit figure null.
+  it('keeps extra usage whose credit figures are null', () => {
+    const usage = decodeUsageResponse({
+      ...fixture,
+      extra_usage: {
+        is_enabled: false,
+        utilization: null,
+        used_credits: null,
+        monthly_limit: null,
+      },
+    });
+
+    expect(usage?.extra_usage).toEqual({ is_enabled: false });
+  });
+
+  it('omits a bucket reset time that is null', () => {
+    const usage = decodeUsageResponse({
+      ...fixture,
+      five_hour: { utilization: 0, resets_at: null },
+    });
+
+    expect(usage?.five_hour).toEqual({ utilization: 0 });
+  });
+
+  it('treats a bucket whose utilization is null as absent', () => {
+    const usage = decodeUsageResponse({
+      ...fixture,
+      seven_day: { utilization: null, resets_at: null },
+    });
+
+    expect(usage?.seven_day).toBeNull();
+  });
+});
 
 describe('decodeUsageResponse — limits', () => {
   it('decodes the fixture limit rows, keeping only the fields the renderer needs', () => {

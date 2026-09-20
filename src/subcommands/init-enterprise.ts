@@ -10,7 +10,7 @@ import {
   loadCredentialSource,
   type CredentialSource,
 } from '../credentials/source';
-import { readCache, type Cache } from '../cache/store';
+import { readCache, sanitizeErrorMessage, type Cache } from '../cache/store';
 import { fetchUsage } from '../oauth/client';
 import { InvalidEnvelopeError, type OAuthCredentials } from '../credentials/envelope';
 import type {
@@ -165,6 +165,7 @@ function makeValidatedCache(
 
 function printNetworkFailure(
   validation: CandidateValidation & { kind: 'network-failure' },
+  credentials: OAuthCredentials,
 ): void {
   if (validation.result.kind === 'cloudflare-blocked') {
     process.stderr.write(
@@ -179,8 +180,12 @@ function printNetworkFailure(
     );
     return;
   }
+  const { status } = validation.result;
+  const message = sanitizeErrorMessage(validation.result.message, credentials);
   process.stderr.write(
-    'init: could not contact the usage API; retry later.\n',
+    status === 0
+      ? `init: could not contact the usage API (${message}); retry later.\n`
+      : `init: the usage API returned an unusable response (status ${status}: ${message}); retry later.\n`,
   );
 }
 
@@ -250,7 +255,7 @@ async function recoverAutomaticCredentials(
       return { kind: 'success', credentials, usage: validation.usage };
     }
     if (validation.kind === 'network-failure') {
-      printNetworkFailure(validation);
+      printNetworkFailure(validation, credentials);
       return { kind: 'exit', code: 4 };
     }
   }
@@ -321,7 +326,7 @@ async function recoverAutomaticCredentials(
     return { kind: 'exit', code: 3 };
   }
   if (validation.kind === 'network-failure') {
-    printNetworkFailure(validation);
+    printNetworkFailure(validation, credentials);
     return { kind: 'exit', code: 4 };
   }
   return { kind: 'success', credentials, usage: validation.usage };
@@ -386,7 +391,7 @@ export async function prepareEnterprise(
       return { kind: 'exit', code: 3 };
     }
     if (validation.kind === 'network-failure') {
-      printNetworkFailure(validation);
+      printNetworkFailure(validation, credentials);
       return { kind: 'exit', code: 4 };
     }
 

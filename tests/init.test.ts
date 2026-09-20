@@ -689,9 +689,47 @@ describe('credential validation and cache persistence', () => {
     );
 
     expect(code).toBe(4);
-    expect(output).toBe('init: could not contact the usage API; retry later.\n');
+    expect(output).toBe(
+      'init: the usage API returned an unusable response (status 200: Invalid response from usage endpoint: unparseable body); retry later.\n',
+    );
     expect(spawnClaude).not.toHaveBeenCalled();
     expect(fileHash(cachePath(tmpDir))).toBe(before);
+  });
+
+  it('names the usage field that could not be decoded', async () => {
+    const tmpDir = makeTmpDir();
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ ...MOCK_USAGE, extra_usage: { is_enabled: 'yes' } }),
+        { status: 200 },
+      ),
+    ) as unknown as typeof fetch;
+
+    const { code, output } = await captureStderr(() =>
+      runInit(['--plan=enterprise', '--force'], baseDeps(tmpDir, { fetchImpl })),
+    );
+
+    expect(code).toBe(4);
+    expect(output).toBe(
+      'init: the usage API returned an unusable response (status 200: Invalid response from usage endpoint: extra_usage); retry later.\n',
+    );
+  });
+
+  it('reports a sanitized transport error when the usage API cannot be reached', async () => {
+    const tmpDir = makeTmpDir();
+    const fetchImpl = makeThrowingFetch(
+      `connect failed for ${MOCK_CREDENTIALS.accessToken}`,
+    );
+
+    const { code, output } = await captureStderr(() =>
+      runInit(['--plan=enterprise', '--force'], baseDeps(tmpDir, { fetchImpl })),
+    );
+
+    expect(code).toBe(4);
+    expect(output).toBe(
+      'init: could not contact the usage API (connect failed for <redacted>); retry later.\n',
+    );
+    expect(output).not.toContain(MOCK_CREDENTIALS.accessToken);
   });
 });
 

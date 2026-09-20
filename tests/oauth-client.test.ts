@@ -47,18 +47,18 @@ describe('fetchUsage', () => {
     expect(result).toEqual({
       kind: 'transient',
       status: 200,
-      message: 'Invalid response from usage endpoint',
+      message: 'Invalid response from usage endpoint: unparseable body',
     });
   });
 
   it.each([
-    ['non-object payload', []],
-    ['invalid usage bucket', { five_hour: { utilization: '42' } }],
+    ['non-object payload', [], 'body'],
+    ['invalid usage bucket', { five_hour: { utilization: '42' } }, 'five_hour'],
     ['invalid reset timestamp', {
       seven_day: { utilization: 67, resets_at: 123 },
-    }],
-    ['invalid extra usage', { extra_usage: { is_enabled: 'yes' } }],
-  ])('invalid 200 %s -> transient', async (_description, body) => {
+    }, 'seven_day'],
+    ['invalid extra usage', { extra_usage: { is_enabled: 'yes' } }, 'extra_usage'],
+  ])('invalid 200 %s -> transient naming the field', async (_description, body, field) => {
     const mockFetch = vi.fn().mockResolvedValue(makeResponse(200, body));
 
     const result = await fetchUsage('access-token-abc', mockFetch);
@@ -66,7 +66,7 @@ describe('fetchUsage', () => {
     expect(result).toEqual({
       kind: 'transient',
       status: 200,
-      message: 'Invalid response from usage endpoint',
+      message: `Invalid response from usage endpoint: ${field}`,
     });
   });
 
@@ -222,7 +222,7 @@ describe('fetchUsage', () => {
     expect(result).toEqual({
       kind: 'transient',
       status: 200,
-      message: 'Invalid response from usage endpoint',
+      message: 'Invalid response from usage endpoint: unparseable body',
     });
   });
 });

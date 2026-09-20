@@ -1,5 +1,5 @@
 import type { FetchUsageResult, RateLimitDiagnostics } from './types';
-import { decodeUsageResponse } from './usage';
+import { decodeUsage } from './usage';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const BETA_HEADER = 'oauth-2025-04-20';
@@ -60,23 +60,25 @@ export async function fetchUsage(
     const status = response.status;
 
     if (status === 200) {
+      let body: unknown;
       try {
-        const data = decodeUsageResponse(await response.json());
-        if (data === null) {
-          return {
-            kind: 'transient',
-            status,
-            message: 'Invalid response from usage endpoint',
-          };
-        }
-        return { kind: 'success', data };
+        body = await response.json();
       } catch {
         return {
           kind: 'transient',
           status,
-          message: 'Invalid response from usage endpoint',
+          message: 'Invalid response from usage endpoint: unparseable body',
         };
       }
+      const decoded = decodeUsage(body);
+      if (decoded.kind === 'invalid') {
+        return {
+          kind: 'transient',
+          status,
+          message: `Invalid response from usage endpoint: ${decoded.field}`,
+        };
+      }
+      return { kind: 'success', data: decoded.usage };
     }
 
     if (status === 401) {

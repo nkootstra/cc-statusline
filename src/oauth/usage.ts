@@ -41,10 +41,13 @@ interface UsageResponseJson {
   limits?: unknown;
 }
 
+// The endpoint sends null, not an absent key, for figures it has no value for
+// (a window that has not started, or credits on an account without extra
+// usage), so null is read as absent everywhere a figure is optional.
 function optionalFiniteNumber(
   value: unknown,
 ): number | undefined | typeof INVALID_USAGE_FIELD {
-  if (value === undefined) return undefined;
+  if (value === undefined || value === null) return undefined;
   return typeof value === 'number' && Number.isFinite(value)
     ? value
     : INVALID_USAGE_FIELD;
@@ -53,7 +56,7 @@ function optionalFiniteNumber(
 function optionalString(
   value: unknown,
 ): string | undefined | typeof INVALID_USAGE_FIELD {
-  if (value === undefined) return undefined;
+  if (value === undefined || value === null) return undefined;
   return typeof value === 'string' ? value : INVALID_USAGE_FIELD;
 }
 
@@ -66,6 +69,7 @@ function decodeUsageBucket(
   }
 
   const candidate = value as UsageBucketJson;
+  if (candidate.utilization === null) return null;
   const utilization = optionalFiniteNumber(candidate.utilization);
   const resetsAtSnake = optionalString(candidate.resets_at);
   const resetsAtCamel = optionalString(candidate.resetsAt);
@@ -175,36 +179,50 @@ export function modelScopedWindows(usage: UsageResponse): ModelScopedWindow[] {
   return windows;
 }
 
-export function decodeUsageResponse(value: unknown): UsageResponse | null {
+export type UsageDecodeResult =
+  | { kind: 'ok'; usage: UsageResponse }
+  | { kind: 'invalid'; field: string };
+
+function invalidField(field: string): UsageDecodeResult {
+  return { kind: 'invalid', field };
+}
+
+// Names only the top-level field that failed, never its value, so the result
+// is safe to print and log.
+export function decodeUsage(value: unknown): UsageDecodeResult {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return null;
+    return invalidField('body');
   }
 
   const candidate = value as UsageResponseJson;
   const fiveHour = decodeUsageBucket(candidate.five_hour);
+  if (fiveHour === INVALID_USAGE_FIELD) return invalidField('five_hour');
   const sevenDay = decodeUsageBucket(candidate.seven_day);
+  if (sevenDay === INVALID_USAGE_FIELD) return invalidField('seven_day');
   const sevenDaySonnet = decodeUsageBucket(candidate.seven_day_sonnet);
+  if (sevenDaySonnet === INVALID_USAGE_FIELD) return invalidField('seven_day_sonnet');
   const sevenDayOpus = decodeUsageBucket(candidate.seven_day_opus);
+  if (sevenDayOpus === INVALID_USAGE_FIELD) return invalidField('seven_day_opus');
   const extraUsage = decodeExtraUsage(candidate.extra_usage);
+  if (extraUsage === INVALID_USAGE_FIELD) return invalidField('extra_usage');
   const limits = decodeUsageLimits(candidate.limits);
-  if (
-    fiveHour === INVALID_USAGE_FIELD ||
-    sevenDay === INVALID_USAGE_FIELD ||
-    sevenDaySonnet === INVALID_USAGE_FIELD ||
-    sevenDayOpus === INVALID_USAGE_FIELD ||
-    extraUsage === INVALID_USAGE_FIELD
-  ) {
-    return null;
-  }
 
   return {
-    ...(fiveHour === undefined ? {} : { five_hour: fiveHour }),
-    ...(sevenDay === undefined ? {} : { seven_day: sevenDay }),
-    ...(sevenDaySonnet === undefined
-      ? {}
-      : { seven_day_sonnet: sevenDaySonnet }),
-    ...(sevenDayOpus === undefined ? {} : { seven_day_opus: sevenDayOpus }),
-    ...(extraUsage === undefined ? {} : { extra_usage: extraUsage }),
-    ...(limits === undefined ? {} : { limits }),
+    kind: 'ok',
+    usage: {
+      ...(fiveHour === undefined ? {} : { five_hour: fiveHour }),
+      ...(sevenDay === undefined ? {} : { seven_day: sevenDay }),
+      ...(sevenDaySonnet === undefined
+        ? {}
+        : { seven_day_sonnet: sevenDaySonnet }),
+      ...(sevenDayOpus === undefined ? {} : { seven_day_opus: sevenDayOpus }),
+      ...(extraUsage === undefined ? {} : { extra_usage: extraUsage }),
+      ...(limits === undefined ? {} : { limits }),
+    },
   };
+}
+
+export function decodeUsageResponse(value: unknown): UsageResponse | null {
+  const result = decodeUsage(value);
+  return result.kind === 'ok' ? result.usage : null;
 }
