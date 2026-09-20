@@ -570,7 +570,7 @@ describe('Scenario 11: model-scoped weekly windows', () => {
       ))),
     );
 
-    expect(output).toBe(`${BASE_LINE} · Fable 12% [Tue 20:00] · $0.50\n`);
+    expect(output).toBe(`${BASE_LINE} · Fable 12% · $0.50\n`);
   });
 
   it('renders the fixture Fable window', async () => {
@@ -591,7 +591,45 @@ describe('Scenario 11: model-scoped weekly windows', () => {
       ]))),
     );
 
-    expect(output).toBe(`${BASE_LINE} · Fable 12% [Tue 20:00] · Opus 40%\n`);
+    expect(output).toBe(`${BASE_LINE} · Fable 12% · Opus 40%\n`);
+  });
+
+  it('keeps the reset hint when it differs from the 7d reset', async () => {
+    const { output } = await captureStdout(() =>
+      runRenderPromax([], makeStream(makeInput([
+        { display_name: 'Fable', utilization: 12, resets_at: new Date(2026, 4, 6, 20, 0, 0).toISOString() },
+      ]))),
+    );
+
+    expect(output).toBe(`${BASE_LINE} · Fable 12% [Wed 20:00]\n`);
+  });
+
+  // Observed live: the server puts the 7d reset one second before the hour
+  // and the per-model reset on the hour, so the two must compare as shown.
+  it('shows the shared reset once when the 7d reset sits a second before the hour', async () => {
+    const input = JSON.parse(makeInput([
+      { display_name: 'Fable', utilization: 12, resets_at: new Date(RESET.getTime() + 412).toISOString() },
+    ])) as { rate_limits: { seven_day: { resets_at: number } } };
+    input.rate_limits.seven_day.resets_at = (RESET.getTime() - 589) / 1000;
+
+    const { output } = await captureStdout(() =>
+      runRenderPromax([], makeStream(JSON.stringify(input))),
+    );
+
+    expect(output).toBe(`${BASE_LINE} · Fable 12%\n`);
+  });
+
+  it('keeps the reset hint when the 7d window shows none', async () => {
+    const input = JSON.parse(makeInput([
+      { display_name: 'Fable', utilization: 12, resets_at: RESET.toISOString() },
+    ])) as { rate_limits: { seven_day: { resets_at: number } } };
+    input.rate_limits.seven_day.resets_at = new Date(2026, 4, 3, 19, 0, 0).getTime() / 1000;
+
+    const { output } = await captureStdout(() =>
+      runRenderPromax([], makeStream(JSON.stringify(input))),
+    );
+
+    expect(output).toBe('Sonnet 4.6 · 5h 0% [21:00] · 7d 81% · Fable 12% [Tue 20:00]\n');
   });
 
   it('omits windows without a utilization figure', async () => {
@@ -626,7 +664,7 @@ describe('Scenario 11: model-scoped weekly windows', () => {
         ]))),
       );
 
-      expect(output).toBe('Sonnet 4.6\n5h 0% [21:00] · 7d 81% [Tue 20:00] · Fable 12% [Tue 20:00]\n');
+      expect(output).toBe('Sonnet 4.6\n5h 0% [21:00] · 7d 81% [Tue 20:00] · Fable 12%\n');
     } finally {
       Object.defineProperty(process.stdout, 'columns', {
         value: undefined,

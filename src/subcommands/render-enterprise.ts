@@ -98,17 +98,21 @@ function buildCtxSegment(usedPercentage: number | null | undefined): string {
 }
 
 
+function bucketResetHint(bucket: UsageBucket | null | undefined, nowMs: number): string {
+  if (bucket === null || bucket === undefined) return MISSING;
+  return formatResetHint(bucket.resets_at ?? bucket.resetsAt, nowMs);
+}
+
 function buildUsageBucketSegment(
   label: string,
   bucket: UsageBucket | null | undefined,
-  nowMs: number,
+  hint: string,
 ): string {
   if (bucket === null || bucket === undefined) {
     return `${label} ${MISSING}`;
   }
 
   const pct = Math.round(bucket.utilization);
-  const hint = formatResetHint(bucket.resets_at ?? bucket.resetsAt, nowMs);
   return [label, applyColor(`${pct}%`, colorTier(pct)), formatOptionalHint(hint)]
     .filter(Boolean)
     .join(' ');
@@ -160,11 +164,18 @@ function buildExtraUsageSegment(extra: ExtraUsage): string {
   return `credits $${usedDisplay} / $${limitDisplay} (${utilizationPct}%)`;
 }
 
-function buildFallbackUsageSegment(usage: UsageResponse, nowMs: number): string {
-  return [
-    buildUsageBucketSegment('5h', usage.five_hour, nowMs),
-    buildUsageBucketSegment('7d', usage.seven_day, nowMs),
-  ].join(' · ');
+function buildFallbackUsageSegment(
+  usage: UsageResponse,
+  nowMs: number,
+): { text: string; sevenDayHint: string } {
+  const sevenDayHint = bucketResetHint(usage.seven_day, nowMs);
+  return {
+    text: [
+      buildUsageBucketSegment('5h', usage.five_hour, bucketResetHint(usage.five_hour, nowMs)),
+      buildUsageBucketSegment('7d', usage.seven_day, sevenDayHint),
+    ].join(' · '),
+    sevenDayHint,
+  };
 }
 
 /**
@@ -193,11 +204,18 @@ function buildUsageSegment(
 
   const usage = cache.usage;
   const extra = usage.extra_usage;
+  let mainSeg: string;
+  let sharedResetHint: string | undefined;
+  if (extra?.is_enabled === true) {
+    mainSeg = buildExtraUsageSegment(extra);
+  } else {
+    const fallback = buildFallbackUsageSegment(usage, nowMs);
+    mainSeg = fallback.text;
+    sharedResetHint = fallback.sevenDayHint;
+  }
   let figureSeg = [
-    extra?.is_enabled === true
-      ? buildExtraUsageSegment(extra)
-      : buildFallbackUsageSegment(usage, nowMs),
-    ...buildModelScopedSegments(modelScopedWindows(usage), nowMs),
+    mainSeg,
+    ...buildModelScopedSegments(modelScopedWindows(usage), { now: nowMs, sharedResetHint }),
   ].join(SEP);
 
   // Apply staleness dim + marker if needed.

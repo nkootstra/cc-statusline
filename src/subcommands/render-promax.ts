@@ -30,14 +30,13 @@ function buildCtxSegment(usedPercentage: number | null | undefined): string {
 function buildRateLimitSegment(
   label: string,
   usedPercentage: number | undefined,
-  resetsAt: number | undefined,
+  hint: string,
 ): string {
   if (usedPercentage === undefined) {
     return `${label} ${MISSING}`;
   }
   const pct = Math.round(usedPercentage);
   const tier = colorTier(pct);
-  const hint = formatResetHint(resetsAt ?? null);
   return [label, applyColor(`${pct}%`, tier), formatOptionalHint(hint)]
     .filter(Boolean)
     .join(' ');
@@ -57,17 +56,18 @@ function renderLine(input: ReturnType<typeof parseStdin>): string {
 
   const modelSeg = buildModelSegment(input.model.display_name);
   const ctxSeg = buildCtxSegment(input.context_window?.used_percentage);
+  const fiveHour = input.rate_limits?.five_hour;
   const fiveHourSeg = buildRateLimitSegment(
     '5h',
-    input.rate_limits?.five_hour?.used_percentage,
-    input.rate_limits?.five_hour?.resetsAt,
+    fiveHour?.used_percentage,
+    formatResetHint(fiveHour?.resetsAt ?? null),
   );
-  const sevenDaySeg = buildRateLimitSegment(
-    '7d',
-    input.rate_limits?.seven_day?.used_percentage,
-    input.rate_limits?.seven_day?.resetsAt,
-  );
-  const modelScopedSegs = buildModelScopedSegments(input.rate_limits?.model_scoped);
+  const sevenDay = input.rate_limits?.seven_day;
+  const sevenDayHint = formatResetHint(sevenDay?.resetsAt ?? null);
+  const sevenDaySeg = buildRateLimitSegment('7d', sevenDay?.used_percentage, sevenDayHint);
+  const modelScopedSegs = buildModelScopedSegments(input.rate_limits?.model_scoped, {
+    sharedResetHint: sevenDayHint,
+  });
   const costSeg = buildCostSegment(input.cost.total_cost_usd);
 
   const layout = chooseLayout(process.stdout.columns);

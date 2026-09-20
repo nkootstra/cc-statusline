@@ -28,19 +28,28 @@ export function sanitizeDisplayName(value: unknown): string | undefined {
   return cleaned === '' ? undefined : cleaned;
 }
 
+export interface ModelScopedSegmentOptions {
+  now?: number | undefined;
+  // The reset hint the 7d segment already shows. Per-model windows share the
+  // weekly reset in practice, so a matching hint is not printed a second time.
+  sharedResetHint?: string | undefined;
+}
+
 export function buildModelScopedSegments(
   windows: readonly ModelScopedWindow[] | undefined,
-  now: number = Date.now(),
+  options: ModelScopedSegmentOptions = {},
 ): string[] {
   if (windows === undefined) return [];
 
+  const now = options.now ?? Date.now();
   const segments: string[] = [];
   for (const window of windows) {
     if (window.utilization === null) continue;
     const pct = Math.round(window.utilization);
     const hint = formatResetHint(window.resets_at, now);
+    const hintSeg = hint === options.sharedResetHint ? '' : formatOptionalHint(hint);
     segments.push(
-      [window.display_name, applyColor(`${pct}%`, colorTier(pct)), formatOptionalHint(hint)]
+      [window.display_name, applyColor(`${pct}%`, colorTier(pct)), hintSeg]
         .filter(Boolean)
         .join(' '),
     );

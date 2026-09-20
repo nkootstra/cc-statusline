@@ -203,9 +203,6 @@ export function formatResetHint(
     resetMs = parsed;
   }
 
-  const resetDate = new Date(resetMs);
-  if (!isFinite(resetDate.getTime())) return MISSING;
-
   const diffMs = resetMs - now;
 
   // Treat dates in the past or at the current moment as missing.
@@ -217,6 +214,12 @@ export function formatResetHint(
   if (diffMin < 5) {
     return '<5m';
   }
+
+  // The usage endpoint ends some windows a second before the minute
+  // (17:59:59) and others on it (18:00:00), so the clock is rounded rather
+  // than truncated or the same reset prints as two different times.
+  const resetDate = new Date(Math.round(resetMs / 60_000) * 60_000);
+  if (!isFinite(resetDate.getTime())) return MISSING;
 
   const nowDate = new Date(now);
   const isSameDay =
