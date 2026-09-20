@@ -87,7 +87,7 @@ describe('build smoke', () => {
     );
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('Pro/Max statusline installed');
+    expect(result.stdout).toContain('Pro statusline installed');
 
     const settings = JSON.parse(readFileSync(resolve(claudeDir, 'settings.json'), 'utf8'));
     expect(settings.statusLine.command).toContain('render-promax');

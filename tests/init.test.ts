@@ -171,19 +171,42 @@ function authRecoveryDeps(
   };
 }
 
-describe('plan selection and Pro/Max installation', () => {
+describe('plan selection and Pro installation', () => {
   it.each([
-    [['--plan=pro'], 'pro'],
-    [['--plan', 'max'], 'max'],
-  ])('accepts %j without reading stdin', async (args) => {
+    [['--plan=pro']],
+    [['--plan', 'pro']],
+  ])('accepts %j without reading stdin or credentials', async (args) => {
     const tmpDir = makeTmpDir();
     const stdinReader = vi.fn();
-    const deps = baseDeps(tmpDir, { stdinReader, isInteractive: true });
+    const discoverImpl = vi.fn();
+    const deps = baseDeps(tmpDir, {
+      stdinReader,
+      isInteractive: true,
+      discoverImpl: discoverImpl as InitDeps['discoverImpl'],
+    });
 
     expect(await runInit(args, deps)).toBe(0);
     expect(stdinReader).not.toHaveBeenCalled();
+    expect(discoverImpl).not.toHaveBeenCalled();
     expect(readSettings(settingsPath(tmpDir)).statusLine?.command).toContain('render-promax');
     expect(fs.existsSync(cachePath(tmpDir))).toBe(false);
+  });
+
+  it('prints the Pro install message', async () => {
+    const tmpDir = makeTmpDir();
+    const { code, output } = await captureStdout(() => runInit(['--plan=pro'], baseDeps(tmpDir)));
+
+    expect(code).toBe(0);
+    expect(output).toContain('Pro statusline installed');
+  });
+
+  it('selects Max from the interactive prompt and installs the usage-API renderer', async () => {
+    const tmpDir = makeTmpDir();
+    const stdinReader = vi.fn().mockResolvedValue('2');
+
+    expect(await runInit([], baseDeps(tmpDir, { isInteractive: true, stdinReader }))).toBe(0);
+    expect(stdinReader).toHaveBeenCalledOnce();
+    expect(readSettings(settingsPath(tmpDir)).statusLine?.command).toContain('render-enterprise');
   });
 
   it('prompts for a plan only when interaction is available', async () => {
@@ -422,6 +445,22 @@ describe('guided Claude Code authentication recovery', () => {
 
     expect(code).toBe(3);
     expect(output).toBe(`init: could not read Claude Code credentials: ${filePath} ${expected}.\n`);
+  });
+
+  it('prints --plan max in the manual login instructions for a Max install', async () => {
+    const tmpDir = makeTmpDir();
+    const discoverImpl = vi.fn().mockRejectedValue(
+      new CredentialNotFoundError(['/mock/credentials.json']),
+    );
+    const { code, output } = await captureStderr(() =>
+      runInit(['--plan=max', '--non-interactive'], baseDeps(tmpDir, {
+        discoverImpl: discoverImpl as InitDeps['discoverImpl'],
+      })),
+    );
+
+    expect(code).toBe(2);
+    expect(output.split('\n')).toContain('claude auth login');
+    expect(output.split('\n')).toContain('npx @nkootstra/cc-statusline --plan max');
   });
 
   it.each([
@@ -814,6 +853,45 @@ describe('settings, platform, and installer regressions', () => {
     expect(code).toBe(0);
     expect(fs.readFileSync(bundlePath(tmpDir), 'utf8')).toBe('second\n');
     expect(output).toMatch(/installed cc-statusline v1\.2\.3/);
+  });
+
+  it('installs the usage-API renderer and validates credentials for --plan max', async () => {
+    const tmpDir = makeTmpDir();
+    const stdinReader = vi.fn();
+    const fetchImpl = makeFetch();
+    const discoverImpl = vi.fn().mockResolvedValue(MOCK_CREDENTIALS);
+    const deps = baseDeps(tmpDir, {
+      stdinReader,
+      isInteractive: true,
+      fetchImpl,
+      discoverImpl: discoverImpl as InitDeps['discoverImpl'],
+    });
+
+    expect(await runInit(['--plan', 'max'], deps)).toBe(0);
+    expect(stdinReader).not.toHaveBeenCalled();
+    expect(discoverImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
+      .toBe(`${bundlePath(tmpDir)} render-enterprise`);
+    expect(readCache(cachePath(tmpDir))).toMatchObject({
+      credentialSource: { kind: 'claude-code' },
+    });
+  });
+
+  it('names the Max plan in the install and cache-reuse messages', async () => {
+    const tmpDir = makeTmpDir();
+    const deps = baseDeps(tmpDir);
+
+    const first = await captureStdout(() => runInit(['--plan=max'], deps));
+    expect(first.code).toBe(0);
+    expect(first.output).toContain('Max statusline installed');
+    expect(first.output).not.toContain('Pro/Max');
+    expect(first.output).not.toContain('Enterprise');
+
+    const second = await captureStdout(() => runInit(['--plan=max'], deps));
+    expect(second.code).toBe(0);
+    expect(second.output).toContain('Max statusline is already installed with valid credentials');
+    expect(second.output).not.toContain('Enterprise');
   });
 
   it('prints the macOS keychain note only for automatic Enterprise discovery', async () => {
