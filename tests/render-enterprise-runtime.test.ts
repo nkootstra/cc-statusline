@@ -208,7 +208,16 @@ describe('background refresh integration', () => {
           },
         ),
       );
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // The error-path release is fire-and-forget, so wait for the atomic
+      // cache rewrite instead of racing it with a fixed sleep (slow Windows
+      // runners need well over 50 ms).
+      const deadline = Date.now() + 2_000;
+      while (
+        readCache(cachePath)?.lastRefreshStartedAt !== 0 &&
+        Date.now() < deadline
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
 
       expect(readCache(cachePath)?.lastRefreshStartedAt).toBe(0);
     } finally {
