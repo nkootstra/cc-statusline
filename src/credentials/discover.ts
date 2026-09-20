@@ -1,9 +1,11 @@
 /**
  * Platform-aware credential discovery for Claude Code's stored OAuth tokens.
  *
- * Discovery sequence (mirrors `nkootstra/claude-usage` KeychainReader.swift):
- *   1. macOS only — spawn `security find-generic-password -s "Claude Code-credentials" -w`
- *      (no shell:true, argv only — avoids shell injection).
+ * Discovery sequence (mirrors Claude Code's own keychain lookup):
+ *   1. macOS only — spawn `security find-generic-password -a <account> -s "Claude Code-credentials" -w`
+ *      where <account> is what Claude Code uses: `$USER`, else the OS username,
+ *      else `claude-code-user` (no shell:true, argv only — avoids shell injection).
+ *      If no item exists for that account, retry without `-a`.
  *   2. All platforms — `<home>/.claude/.credentials.json`
  *   3. All platforms — `<home>/.claude/credentials.json`
  *
@@ -21,7 +23,7 @@
 
 import { spawn as nodeSpawn } from 'node:child_process';
 import { readFile as nodeReadFile } from 'node:fs/promises';
-import { homedir as nodeHomedir } from 'node:os';
+import { homedir as nodeHomedir, userInfo as nodeUserInfo } from 'node:os';
 import { join } from 'node:path';
 import { decodeEnvelope, InvalidEnvelopeError, type OAuthCredentials } from './envelope.js';
 
@@ -66,6 +68,8 @@ export interface DiscoverOptions {
   claudeConfigDirOverride?: string;
   /** Override platform for testing. */
   platformOverride?: NodeJS.Platform;
+  /** Override the keychain account attribute for testing. */
+  keychainAccountOverride?: string;
   /**
    * Custom spawn function for testing the macOS keychain path.
    * Must match the signature of `node:child_process`.spawn.
@@ -81,6 +85,21 @@ export interface DiscoverOptions {
 
 export const KEYCHAIN_SERVICE = 'Claude Code-credentials';
 const SPAWN_TIMEOUT_MS = 10_000;
+const KEYCHAIN_ACCOUNT_PATTERN = /^[a-zA-Z0-9._-]+$/;
+const FALLBACK_KEYCHAIN_ACCOUNT = 'claude-code-user';
+
+export function resolveKeychainAccount(
+  envUser: string | undefined,
+  osUsername: () => string,
+): string {
+  let account: string;
+  try {
+    account = envUser || osUsername();
+  } catch {
+    return FALLBACK_KEYCHAIN_ACCOUNT;
+  }
+  return KEYCHAIN_ACCOUNT_PATTERN.test(account) ? account : FALLBACK_KEYCHAIN_ACCOUNT;
+}
 
 /**
  * Attempt to read the credential from the macOS keychain via `security(1)`.
@@ -92,6 +111,7 @@ const SPAWN_TIMEOUT_MS = 10_000;
  */
 function readFromKeychain(
   spawnFn: typeof nodeSpawn,
+  account: string | null,
 ): Promise<OAuthCredentials | null> {
   return new Promise((resolve, reject) => {
     const controller = new AbortController();
@@ -102,7 +122,13 @@ function readFromKeychain(
 
     const child = spawnFn(
       'security',
-      ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-w'],
+      [
+        'find-generic-password',
+        ...(account === null ? [] : ['-a', account]),
+        '-s',
+        KEYCHAIN_SERVICE,
+        '-w',
+      ],
       {
         shell: false,
         signal: controller.signal,
@@ -249,8 +275,19 @@ export async function discover(options?: DiscoverOptions): Promise<OAuthCredenti
 
   // ── Step 1: macOS keychain ──────────────────────────────────────────────
   if (platform === 'darwin') {
-    pathsTried.push('macOS keychain (Claude Code-credentials)');
-    const keychainResult = await readFromKeychain(spawnFn);
+    const account =
+      options?.keychainAccountOverride ??
+      resolveKeychainAccount(process.env['USER'], () => nodeUserInfo().username);
+    // Claude Code stores and reads its item by account and service. Other
+    // tools can add items under the same service name, and a service-only
+    // query may return one of those instead.
+    pathsTried.push(`macOS keychain (${KEYCHAIN_SERVICE}, account ${account})`);
+    const scopedResult = await readFromKeychain(spawnFn, account);
+    if (scopedResult !== null) {
+      return scopedResult;
+    }
+    pathsTried.push(`macOS keychain (${KEYCHAIN_SERVICE}, any account)`);
+    const keychainResult = await readFromKeychain(spawnFn, null);
     if (keychainResult !== null) {
       return keychainResult;
     }

@@ -95,11 +95,11 @@ The v4 cache at `~/.claude/cc-statusline/cache.json` is mode `0600` and contains
 
 During `init`, automatic credential discovery uses this order:
 
-1. macOS Keychain service `Claude Code-credentials` (macOS only)
+1. macOS Keychain service `Claude Code-credentials` for the current user's account, the item Claude Code itself reads and writes, then the same service for any account (macOS only)
 2. `~/.claude/.credentials.json`
 3. `~/.claude/credentials.json`
 
-Automatic discovery is recorded as the `Claude Code` credential source. `--credentials-path=<path>` instead records an `explicit file` source. The explicit path is authoritative: background refresh rereads that file and does not fall back to Keychain or another Claude Code credential location. The path is resolved with `realpath`, must remain a regular file inside the user's home directory, and is never printed by `doctor`.
+Automatic discovery is recorded as the `Claude Code` credential source. When a discovered credential cannot be decoded, init names the source and the offending envelope field; it never prints token values or an explicit `--credentials-path` path. `--credentials-path=<path>` instead records an `explicit file` source. The explicit path is authoritative: background refresh rereads that file and does not fall back to Keychain or another Claude Code credential location. The path is resolved with `realpath`, must remain a regular file inside the user's home directory, and is never printed by `doctor`.
 
 Only the `accessToken` is copied into the cache and sent as a Bearer token to the Anthropic usage endpoint. The cache is located at `~/.claude/cc-statusline/cache.json`, or under `$CLAUDE_CONFIG_DIR/cc-statusline/cache.json` when `CLAUDE_CONFIG_DIR` is set.
 

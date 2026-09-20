@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { decodeEnvelope, InvalidEnvelopeError } from '../src/credentials/envelope.js';
 import {
   discover,
+  resolveKeychainAccount,
   CredentialFileError,
   CredentialNotFoundError,
 } from '../src/credentials/discover.js';
@@ -57,6 +58,21 @@ function makeFakeSpawn(stdout: string, exitCode: number) {
       }
       proc.stdout.emit('data', Buffer.from(stdout));
       proc.emit('close', exitCode, null);
+    });
+
+    return proc;
+  });
+}
+
+function makeArgvSpawn(responder: (args: string[]) => { stdout: string; code: number }) {
+  return vi.fn((_cmd: string, args: string[]) => {
+    const stdoutEmitter = new EventEmitter();
+    const proc: FakeProc = Object.assign(new EventEmitter(), { stdout: stdoutEmitter });
+
+    setImmediate(() => {
+      const { stdout, code } = responder(args);
+      if (stdout) proc.stdout.emit('data', Buffer.from(stdout));
+      proc.emit('close', code, null);
     });
 
     return proc;
@@ -312,6 +328,89 @@ describe('discover', () => {
     expect(spawnFn).toHaveBeenCalledOnce();
   });
 
+  // ── Keychain account scoping ───────────────────────────────────────────
+
+  it('reads the item for the current account before any other item with the same service', async () => {
+    const spawnFn = makeArgvSpawn((args) =>
+      args.includes('-a')
+        ? { stdout: envelopeJson(VALID_ENVELOPE), code: 0 }
+        : { stdout: '{"foreign":true}', code: 0 },
+    );
+
+    const result = await discover({
+      platformOverride: 'darwin',
+      homedirOverride: HOME,
+      keychainAccountOverride: 'tester',
+      spawnOverride: spawnFn as unknown as typeof import('node:child_process').spawn,
+      readFileOverride: makeFakeReadFile({}),
+    });
+
+    expect(result).toEqual(VALID_ENVELOPE.claudeAiOauth);
+    expect(spawnFn).toHaveBeenCalledOnce();
+    expect(spawnFn.mock.calls[0]![1]).toEqual([
+      'find-generic-password',
+      '-a',
+      'tester',
+      '-s',
+      'Claude Code-credentials',
+      '-w',
+    ]);
+  });
+
+  it('falls back to a service-only query when no item exists for the current account', async () => {
+    const spawnFn = makeArgvSpawn((args) =>
+      args.includes('-a')
+        ? { stdout: '', code: 44 }
+        : { stdout: envelopeJson(VALID_ENVELOPE), code: 0 },
+    );
+
+    const result = await discover({
+      platformOverride: 'darwin',
+      homedirOverride: HOME,
+      keychainAccountOverride: 'tester',
+      spawnOverride: spawnFn as unknown as typeof import('node:child_process').spawn,
+      readFileOverride: makeFakeReadFile({}),
+    });
+
+    expect(result).toEqual(VALID_ENVELOPE.claudeAiOauth);
+    expect(spawnFn).toHaveBeenCalledTimes(2);
+    expect(spawnFn.mock.calls[1]![1]).toEqual([
+      'find-generic-password',
+      '-s',
+      'Claude Code-credentials',
+      '-w',
+    ]);
+  });
+
+  it('reports a malformed item for the current account instead of trying other items', async () => {
+    const spawnFn = makeArgvSpawn((args) =>
+      args.includes('-a')
+        ? { stdout: '{"claudeAiOauth":null}', code: 0 }
+        : { stdout: envelopeJson(VALID_ENVELOPE), code: 0 },
+    );
+
+    await expect(
+      discover({
+        platformOverride: 'darwin',
+        homedirOverride: HOME,
+        keychainAccountOverride: 'tester',
+        spawnOverride: spawnFn as unknown as typeof import('node:child_process').spawn,
+        readFileOverride: makeFakeReadFile({}),
+      }),
+    ).rejects.toBeInstanceOf(InvalidEnvelopeError);
+    expect(spawnFn).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['the USER variable', 'niels.k-1_', () => 'os-user', 'niels.k-1_'],
+    ['the OS username when USER is empty', '', () => 'os-user', 'os-user'],
+    ['the OS username when USER is unset', undefined, () => 'os-user', 'os-user'],
+    ['a fixed account when the username has other characters', 'bad user!', () => 'os-user', 'claude-code-user'],
+    ['a fixed account when the OS username is unavailable', undefined, () => { throw new Error('no user'); }, 'claude-code-user'],
+  ])('resolves the keychain account from %s', (_label, envUser, osUsername, expected) => {
+    expect(resolveKeychainAccount(envUser, osUsername)).toBe(expected);
+  });
+
   it('happy Linux file: returns credentials from .credentials.json without calling spawn', async () => {
     const spawnFn = makeFakeSpawn('', 0);
     const readFileFn = makeFakeReadFile({
@@ -433,7 +532,7 @@ describe('discover', () => {
     expect(err!.message).toContain(dotCredPath);
     expect(err!.message).toContain(credPath);
     expect(err!.message).toContain('keychain');
-    expect(err!.pathsTried).toHaveLength(3);
+    expect(err!.pathsTried).toHaveLength(4);
   });
 
   // ── Timeout ─────────────────────────────────────────────────────────────
@@ -615,9 +714,10 @@ describe('discover', () => {
     const [cmd, args, opts] = spawnFn.mock.calls[0]!;
     expect(cmd).toBe('security');
     expect(args[0]).toBe('find-generic-password');
-    expect(args[1]).toBe('-s');
-    expect(args[2]).toBe('Claude Code-credentials');
-    expect(args[3]).toBe('-w');
+    expect(args[1]).toBe('-a');
+    expect(args[3]).toBe('-s');
+    expect(args[4]).toBe('Claude Code-credentials');
+    expect(args[5]).toBe('-w');
     // shell must be absent, false, or undefined — never true.
     expect((opts as Record<string, unknown>)?.['shell']).not.toBe(true);
   });
