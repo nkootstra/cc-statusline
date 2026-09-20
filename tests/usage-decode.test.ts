@@ -124,4 +124,47 @@ describe('modelScopedWindows', () => {
       { display_name: 'Fable', utilization: null, resets_at: '2026-05-10T00:00:00.000Z' },
     ]);
   });
+
+  // Shape observed from the live endpoint during the Fable promotional window:
+  // flat per-model buckets go null, scope.model.id is null, and timestamps
+  // carry microseconds with an explicit offset.
+  it('projects the live response shape that moved weekly caps onto limits[]', () => {
+    const usage = decodeUsageResponse({
+      five_hour: { utilization: 11.0, resets_at: '2026-07-03T00:30:00.282668+00:00' },
+      seven_day: { utilization: 9.0, resets_at: '2026-07-08T09:00:00.282694+00:00' },
+      seven_day_opus: null,
+      seven_day_sonnet: null,
+      limits: [
+        {
+          kind: 'session',
+          group: 'session',
+          percent: 11,
+          resets_at: '2026-07-03T00:30:00.282668+00:00',
+          scope: null,
+          is_active: true,
+        },
+        {
+          kind: 'weekly_all',
+          group: 'weekly',
+          percent: 9,
+          resets_at: '2026-07-08T09:00:00.282694+00:00',
+          scope: null,
+          is_active: false,
+        },
+        {
+          kind: 'weekly_scoped',
+          group: 'weekly',
+          percent: 5,
+          resets_at: '2026-07-08T09:00:00.283070+00:00',
+          scope: { model: { id: null, display_name: 'Fable' }, surface: null },
+          is_active: false,
+        },
+      ],
+    });
+
+    expect(usage?.seven_day_opus).toBeNull();
+    expect(modelScopedWindows(usage!)).toEqual([
+      { display_name: 'Fable', utilization: 5, resets_at: '2026-07-08T09:00:00.283070+00:00' },
+    ]);
+  });
 });
