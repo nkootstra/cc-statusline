@@ -16,6 +16,7 @@ import {
   prepareEnterprise,
   printEnterpriseSuccess,
   type SpawnClaude,
+  type UsageApiPlan,
 } from './init-enterprise';
 
 export type { SpawnClaudeResult } from './init-enterprise';
@@ -31,6 +32,18 @@ const PKG_VERSION: string = ((): string => {
 })();
 
 export type PlanTier = 'pro' | 'max' | 'enterprise';
+
+const PLAN_LABELS: Record<PlanTier, string> = {
+  pro: 'Pro',
+  max: 'Max',
+  enterprise: 'Enterprise',
+};
+
+// Claude Code's statusline payload carries no per-model weekly windows, so a
+// plan that has them (Max) reads the usage API directly, as Enterprise does.
+function usageApiPlan(tier: PlanTier): UsageApiPlan | null {
+  return tier === 'pro' ? null : tier;
+}
 
 export interface InitDeps {
   homedirOverride?: string;
@@ -71,7 +84,7 @@ function buildCommand(
   platform: NodeJS.Platform,
 ): string {
   const bundlePath = path.join(installDir, 'cc-statusline.js');
-  const subcommand = tier === 'enterprise' ? 'render-enterprise' : 'render-promax';
+  const subcommand = usageApiPlan(tier) === null ? 'render-promax' : 'render-enterprise';
   return platform === 'win32'
     ? `node ${bundlePath} ${subcommand}`
     : `${bundlePath} ${subcommand}`;
@@ -113,7 +126,7 @@ async function choosePlan(
   process.stdout.write(
     'Which Claude Code plan are you on?\n' +
     '  [1] Pro\n' +
-    '  [2] Max\n' +
+    '  [2] Max (uses keychain credentials)\n' +
     '  [3] Enterprise (uses keychain credentials)\n' +
     '  Choice (1-3): ',
   );
@@ -256,8 +269,11 @@ export async function runInit(args: string[], deps: InitDeps = {}): Promise<numb
   );
   if (settingsPreparation.kind === 'exit') return settingsPreparation.code;
 
-  const enterprisePreparation = tier === 'enterprise'
-    ? await prepareEnterprise({
+  const apiPlan = usageApiPlan(tier);
+  const enterprisePreparation = apiPlan === null
+    ? null
+    : await prepareEnterprise({
+        plan: apiPlan,
         cachePath: cacheFilePath,
         credentialsPath: credentialsPathFlag,
         force: forceFlag,
@@ -272,8 +288,7 @@ export async function runInit(args: string[], deps: InitDeps = {}): Promise<numb
         spawnClaude,
         now,
         fetchImpl: deps.fetchImpl,
-      })
-    : null;
+      });
   if (enterprisePreparation?.kind === 'exit') {
     return enterprisePreparation.code;
   }
@@ -298,9 +313,9 @@ export async function runInit(args: string[], deps: InitDeps = {}): Promise<numb
     `installed cc-statusline v${versionString} to ${installDir}/cc-statusline.js\n`,
   );
 
-  if (tier === 'pro' || tier === 'max') {
+  if (apiPlan === null) {
     process.stdout.write(
-      'Pro/Max statusline installed. Restart Claude Code to see usage in the prompt area.\n' +
+      'Pro statusline installed. Restart Claude Code to see usage in the prompt area.\n' +
       'If Claude Code shows "statusline skipped", accept workspace trust for this project.\n',
     );
     return 0;
@@ -308,10 +323,10 @@ export async function runInit(args: string[], deps: InitDeps = {}): Promise<numb
 
   if (enterprisePreparation?.reusedExistingCache === true) {
     process.stdout.write(
-      'Enterprise statusline is already installed with valid credentials.\n' +
+      `${PLAN_LABELS[tier]} statusline is already installed with valid credentials.\n` +
       'Re-run with --force to re-validate credentials.\n',
     );
   }
-  printEnterpriseSuccess();
+  printEnterpriseSuccess(PLAN_LABELS[tier]);
   return 0;
 }

@@ -34,7 +34,10 @@ export type SpawnClaude = (
   options: SpawnSyncOptions,
 ) => SpawnClaudeResult;
 
+export type UsageApiPlan = 'max' | 'enterprise';
+
 export interface EnterprisePreparationOptions {
+  plan: UsageApiPlan;
   cachePath: string;
   credentialsPath?: string;
   force: boolean;
@@ -216,11 +219,11 @@ function describeDiscoveryFailure(error: unknown): string | null {
   return null;
 }
 
-function printManualAuthInstructions(): void {
+function printManualAuthInstructions(plan: UsageApiPlan): void {
   process.stderr.write(
     'init: Claude Code authentication is required. Run:\n' +
     'claude auth login\n' +
-    'npx @nkootstra/cc-statusline --plan enterprise\n',
+    `npx @nkootstra/cc-statusline --plan ${plan}\n`,
   );
 }
 
@@ -261,7 +264,7 @@ async function recoverAutomaticCredentials(
   }
 
   if (!options.canInteract) {
-    printManualAuthInstructions();
+    printManualAuthInstructions(options.plan);
     return { kind: 'exit', code: 2 };
   }
 
@@ -428,9 +431,9 @@ export async function prepareEnterprise(
   };
 }
 
-export function printEnterpriseSuccess(): void {
+export function printEnterpriseSuccess(planLabel: string): void {
   process.stdout.write(
-    'Enterprise statusline installed. Restart Claude Code to see usage in the prompt area.\n' +
+    `${planLabel} statusline installed. Restart Claude Code to see usage in the prompt area.\n` +
     'If Claude Code shows "statusline skipped", accept workspace trust for this project.\n',
   );
 }
