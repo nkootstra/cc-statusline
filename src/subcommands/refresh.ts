@@ -25,7 +25,11 @@ import { refreshCooldownRemainingMs } from './enterprise-refresh-policy';
 
 const SOURCE_RELOAD_THRESHOLD_MS = 5 * 60 * 1000;
 const FAILURE_RETRY_DELAY_MS = 60 * 1000;
-const RATE_LIMIT_BACKOFF_MAX_MS = 5 * 60 * 1000;
+// The usage endpoint's limit is shared by every client on the account, so a
+// 429 without Retry-After is treated like CodexBar does: five minutes, not the
+// client's generic one-minute default, before trying again.
+const RATE_LIMIT_DEFAULT_COOLDOWN_MS = 5 * 60 * 1000;
+const RATE_LIMIT_BACKOFF_MAX_MS = 15 * 60 * 1000;
 const RATE_LIMIT_BACKOFF_CAP_EXPONENT = 6;
 
 type SourceReloadReason = 'near-expiry' | 'auth-fatal' | 'usage-401';
@@ -41,30 +45,32 @@ export interface RefreshDeps {
   loadCredentialSourceImpl?: LoadCredentialSource;
 }
 
+function rateLimitBaseMs(diag: RateLimitDiagnostics): number {
+  return diag.retryAfterPresent
+    ? diag.retryAfterSeconds * 1000
+    : RATE_LIMIT_DEFAULT_COOLDOWN_MS;
+}
+
 function formatRateLimitMessage(
   prefix: string,
   diag: RateLimitDiagnostics,
 ): string {
-  const headerNote = diag.retryAfterPresent
-    ? 'header present'
-    : 'header absent, default applied';
+  const retryNote = diag.retryAfterPresent
+    ? `Retry-After: ${diag.retryAfterSeconds}s (header present).`
+    : `Retry-After absent; waiting ${RATE_LIMIT_DEFAULT_COOLDOWN_MS / 1000}s.`;
   const shouldRetryNote =
     diag.xShouldRetry === null
       ? ''
       : ` x-should-retry: ${diag.xShouldRetry ? 'true' : 'false'}.`;
-  return `${prefix} Retry-After: ${diag.retryAfterSeconds}s (${headerNote}).${shouldRetryNote}`;
+  return `${prefix} ${retryNote}${shouldRetryNote}`;
 }
 
 function nextRateLimitCooldownUntil(
   nowMs: number,
-  retryAfterSeconds: number,
+  baseMs: number,
   consecutiveCount: number,
 ): number {
-  const baseMs = retryAfterSeconds * 1000;
-  const exponent = Math.min(
-    consecutiveCount + 2,
-    RATE_LIMIT_BACKOFF_CAP_EXPONENT,
-  );
+  const exponent = Math.min(consecutiveCount, RATE_LIMIT_BACKOFF_CAP_EXPONENT);
   const adaptiveMs = baseMs * (1 << exponent);
   return nowMs + Math.min(adaptiveMs, RATE_LIMIT_BACKOFF_MAX_MS);
 }
@@ -94,6 +100,7 @@ async function logUsageResult(
   if (result.kind === 'rate-limited') {
     details['retryAfterSeconds'] = result.retryAfterSeconds;
     details['retryAfterPresent'] = result.retryAfterPresent;
+    details['cooldownSeconds'] = rateLimitBaseMs(result) / 1000;
     details['xShouldRetry'] = result.xShouldRetry;
   } else if (result.kind === 'transient') {
     details['error'] = sanitizeErrorMessage(
@@ -290,17 +297,17 @@ async function persistNonSuccess(
 
         case 'rate-limited': {
           const observedAt = now();
+          const baseMs = rateLimitBaseMs(result);
           current.lastErrorMessage = sanitizeErrorMessage(
             formatRateLimitMessage('Usage fetch rate-limited.', result),
             current.credentials,
             candidate,
           );
           current.rateLimitedUntilMs =
-            observedAt +
-            Math.min(result.retryAfterSeconds * 1000, RATE_LIMIT_BACKOFF_MAX_MS);
+            observedAt + Math.min(baseMs, RATE_LIMIT_BACKOFF_MAX_MS);
           current.nextRefreshAllowedAt = nextRateLimitCooldownUntil(
             observedAt,
-            result.retryAfterSeconds,
+            baseMs,
             current.consecutiveRateLimitCount,
           );
           current.consecutiveRateLimitCount += 1;

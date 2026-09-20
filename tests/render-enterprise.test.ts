@@ -964,7 +964,7 @@ describe('Scenario 22: Enterprise credits and session cost stay source-separated
           monthly_limit: 100000,
         },
       },
-      { lastUsageRefreshAt: NOW - 61 * 1000 },
+      { lastUsageRefreshAt: NOW - 121 * 1000 },
     );
 
     const { output } = await runWithCache(
@@ -1044,7 +1044,7 @@ describe('Scenario 23: model-scoped weekly windows from usage.limits', () => {
     const NOW = Date.now();
     const cache = makeCacheWithUsage(
       { limits: [goldenFableRow()] },
-      { lastUsageRefreshAt: NOW - 61 * 1000 },
+      { lastUsageRefreshAt: NOW - 121 * 1000 },
     );
 
     const { output } = await runWithCache(cache, makeStdinWithCost(16), { now: () => NOW });

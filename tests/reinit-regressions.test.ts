@@ -127,7 +127,7 @@ describe('refresh: expired token that Claude Code has not renewed yet', () => {
 });
 
 describe('refresh: Retry-After is bounded', () => {
-  it('caps a day-long Retry-After at the five minute backoff ceiling', async () => {
+  it('caps a day-long Retry-After at the fifteen minute backoff ceiling', async () => {
     const cachePath = path.join(makeTmpDir(), 'cache.json');
     await writeCache(makeCache(), cachePath);
 
@@ -138,8 +138,8 @@ describe('refresh: Retry-After is bounded', () => {
     });
 
     const result = readCache(cachePath);
-    expect(result?.rateLimitedUntilMs).toBe(NOW + 5 * 60_000);
-    expect(result?.nextRefreshAllowedAt).toBeLessThanOrEqual(NOW + 5 * 60_000);
+    expect(result?.rateLimitedUntilMs).toBe(NOW + 15 * 60_000);
+    expect(result?.nextRefreshAllowedAt).toBe(NOW + 15 * 60_000);
   });
 });
 
