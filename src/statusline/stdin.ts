@@ -49,9 +49,11 @@ export interface RateLimits {
   seven_day?: RateLimitWindow;
   seven_day_opus?: RateLimitWindow;
   /**
-   * Per-model weekly windows (e.g. Fable) projected by Claude Code from the
-   * server `limits[]` rows. Absent when nothing is known; an empty array means
-   * the endpoint answered and listed none.
+   * Per-model weekly windows (e.g. Fable). Claude Code 2.1.278 does not put
+   * these on the statusline payload; it only exposes them to its `/usage`
+   * panel and usage JSON, whose row shape this mirrors so the renderer picks
+   * them up if a later version forwards them. Absent when nothing is known;
+   * an empty array means the endpoint answered and listed none.
    */
   model_scoped?: ModelScopedWindow[];
 }
