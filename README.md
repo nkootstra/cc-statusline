@@ -52,8 +52,8 @@ Older caches are intentionally ignored. Until init creates a v4 cache, the statu
 
 ## What you'll see
 
-- **Pro / Max**: model name plus colorized 5-hour and 7-day rate-limit utilization.
-- **Enterprise**: model name plus cached monthly credits used / credits limit when monthly credits are enabled. Falls back to colorized 5-hour and 7-day rate-limit utilization. The credits figure comes from a local OAuth usage cache that is refreshed in the background every 60 seconds; a ` ~` marker appears when the cached value is older than that. The stale window is configurable with `CC_STATUSLINE_ENTERPRISE_STALE_MS` and clamped to 10–300 seconds. When Claude Code reports a non-zero current-session cost, it appears separately as `session $...`; this is Claude Code's client-side estimate and may differ from actual billing. If authentication cannot be repaired from the recorded source, the statusline shows `run init to repair auth`.
+- **Pro / Max**: model name plus colorized 5-hour and 7-day rate-limit utilization. When Claude Code reports per-model weekly windows (for example Fable), each one is appended after the 7-day figure under the label the server sends.
+- **Enterprise**: model name plus cached monthly credits used / credits limit when monthly credits are enabled. Falls back to colorized 5-hour and 7-day rate-limit utilization. Per-model weekly windows from the usage endpoint's `limits` rows (for example Fable) are appended after that figure under the label the server sends. The credits figure comes from a local OAuth usage cache that is refreshed in the background every 60 seconds; a ` ~` marker appears when the cached value is older than that. The stale window is configurable with `CC_STATUSLINE_ENTERPRISE_STALE_MS` and clamped to 10–300 seconds. When Claude Code reports a non-zero current-session cost, it appears separately as `session $...`; this is Claude Code's client-side estimate and may differ from actual billing. If authentication cannot be repaired from the recorded source, the statusline shows `run init to repair auth`.
 
 The enterprise renderer also enforces a cooldown after API `429` responses. If the server asks a retry delay, cc-statusline will wait before refreshing usage again, and this cooldown can grow across repeated 429s (bounded to five minutes) to avoid repeated rate-limit churn.
 
@@ -62,13 +62,13 @@ Pro and Max use the same renderer. They are separate installer choices only beca
 Example Pro / Max output:
 
 ```text
-Opus 4.7 · 5h 102% · 7d 81% [Tue 20:00]
+Opus 4.7 · 5h 102% · 7d 81% [Tue 20:00] · Fable 12% [Tue 20:00]
 ```
 
 Example Enterprise output:
 
 ```text
-Opus 4.7 · credits $780.00 / $1000.00 (78%) · session $0.08
+Opus 4.7 · credits $780.00 / $1000.00 (78%) · Fable 12% [Tue 20:00] · session $0.08
 ```
 
 ## Check version

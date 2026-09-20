@@ -559,3 +559,31 @@ describe('sanitizeErrorMessage', () => {
     expect(result).toBe('generic network error');
   });
 });
+
+describe('usage.limits roundtrip', () => {
+  it('persists server limit rows through writeCache and readCache', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-statusline-limits-'));
+    const tmpFile = path.join(tmpDir, 'cache.json');
+    const cache = makeMinimalCache({
+      usage: {
+        five_hour: { utilization: 1, resets_at: '2026-05-03T18:00:00.000Z' },
+        limits: [
+          { kind: 'weekly_all', percent: 67, resets_at: '2026-05-10T00:00:00.000Z' },
+          {
+            kind: 'weekly_scoped',
+            percent: 12,
+            resets_at: '2026-05-10T00:00:00.000Z',
+            scope: { model: { display_name: 'Fable' } },
+          },
+        ],
+      },
+    });
+
+    try {
+      await writeCache(cache, tmpFile);
+      expect(readCache(tmpFile)).toEqual(cache);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});

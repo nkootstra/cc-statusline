@@ -19,6 +19,8 @@ import {
 } from '../cache/store';
 import type { Cache } from '../cache/store';
 import type { ExtraUsage, UsageBucket, UsageResponse } from '../oauth/types';
+import { modelScopedWindows } from '../oauth/usage';
+import { buildModelScopedSegments } from '../statusline/model-scoped';
 import {
   decideEnterpriseRefresh,
   rateLimitCooldownRemainingMs,
@@ -191,9 +193,12 @@ function buildUsageSegment(
 
   const usage = cache.usage;
   const extra = usage.extra_usage;
-  let figureSeg = extra?.is_enabled === true
-    ? buildExtraUsageSegment(extra)
-    : buildFallbackUsageSegment(usage, nowMs);
+  let figureSeg = [
+    extra?.is_enabled === true
+      ? buildExtraUsageSegment(extra)
+      : buildFallbackUsageSegment(usage, nowMs),
+    ...buildModelScopedSegments(modelScopedWindows(usage), nowMs),
+  ].join(SEP);
 
   // Apply staleness dim + marker if needed.
   if (isStale) {

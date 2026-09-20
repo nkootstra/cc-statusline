@@ -516,3 +516,135 @@ describe('Scenario 10: no fetch, no file I/O', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Scenario 11: model-scoped weekly windows (e.g. Fable) from rate_limits.model_scoped
+// ---------------------------------------------------------------------------
+
+describe('Scenario 11: model-scoped weekly windows', () => {
+  const RESET = new Date(2026, 4, 5, 20, 0, 0);
+  const BASE_LINE = 'Sonnet 4.6 · 5h 0% [21:00] · 7d 81% [Tue 20:00]';
+
+  function makeInput(modelScoped?: unknown, totalCostUsd = 0): string {
+    return JSON.stringify({
+      session_id: 'test',
+      transcript_path: '/t',
+      cwd: '/c',
+      model: { id: 'claude-sonnet-4-6', display_name: 'Sonnet 4.6' },
+      workspace: { current_dir: '/c', project_dir: '/c' },
+      version: '1',
+      output_style: { name: 'default' },
+      cost: {
+        total_cost_usd: totalCostUsd,
+        total_duration_ms: 0,
+        total_api_duration_ms: 0,
+        total_lines_added: 0,
+        total_lines_removed: 0,
+      },
+      exceeds_200k_tokens: false,
+      context_window: { used_percentage: null },
+      rate_limits: {
+        five_hour: { used_percentage: 0, resets_at: new Date(2026, 4, 3, 21, 0, 0).getTime() / 1000 },
+        seven_day: { used_percentage: 81, resets_at: RESET.getTime() / 1000 },
+        ...(modelScoped === undefined ? {} : { model_scoped: modelScoped }),
+      },
+    });
+  }
+
+  beforeEach(() => {
+    vi.stubEnv('NO_COLOR', '1');
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 4, 3, 20, 0, 0));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it('renders the server-labelled window after 7d and before cost', async () => {
+    const { output } = await captureStdout(() =>
+      runRenderPromax([], makeStream(makeInput(
+        [{ display_name: 'Fable', utilization: 12, resets_at: RESET.toISOString() }],
+        0.5,
+      ))),
+    );
+
+    expect(output).toBe(`${BASE_LINE} · Fable 12% [Tue 20:00] · $0.50\n`);
+  });
+
+  it('renders the fixture Fable window', async () => {
+    const { output } = await captureStdout(() =>
+      runRenderPromax([], makeStream(loadFixture('stdin-promax.json'))),
+    );
+
+    expect(output).toContain('Fable 12%');
+    expect(output.indexOf('7d')).toBeLessThan(output.indexOf('Fable'));
+    expect(output.indexOf('Fable')).toBeLessThan(output.indexOf('$'));
+  });
+
+  it('keeps the server order for multiple windows', async () => {
+    const { output } = await captureStdout(() =>
+      runRenderPromax([], makeStream(makeInput([
+        { display_name: 'Fable', utilization: 12, resets_at: RESET.toISOString() },
+        { display_name: 'Opus', utilization: 40, resets_at: null },
+      ]))),
+    );
+
+    expect(output).toBe(`${BASE_LINE} · Fable 12% [Tue 20:00] · Opus 40%\n`);
+  });
+
+  it('omits windows without a utilization figure', async () => {
+    const { output } = await captureStdout(() =>
+      runRenderPromax([], makeStream(makeInput([
+        { display_name: 'Fable', utilization: null, resets_at: RESET.toISOString() },
+      ]))),
+    );
+
+    expect(output).toBe(`${BASE_LINE}\n`);
+  });
+
+  it('renders nothing extra for an empty model_scoped array', async () => {
+    const { output } = await captureStdout(() =>
+      runRenderPromax([], makeStream(makeInput([]))),
+    );
+
+    expect(output).toBe(`${BASE_LINE}\n`);
+  });
+
+  it('places model-scoped windows on the second row in the narrow layout', async () => {
+    Object.defineProperty(process.stdout, 'columns', {
+      value: 60,
+      writable: true,
+      configurable: true,
+    });
+
+    try {
+      const { output } = await captureStdout(() =>
+        runRenderPromax([], makeStream(makeInput([
+          { display_name: 'Fable', utilization: 12, resets_at: RESET.toISOString() },
+        ]))),
+      );
+
+      expect(output).toBe('Sonnet 4.6\n5h 0% [21:00] · 7d 81% [Tue 20:00] · Fable 12% [Tue 20:00]\n');
+    } finally {
+      Object.defineProperty(process.stdout, 'columns', {
+        value: undefined,
+        writable: true,
+        configurable: true,
+      });
+    }
+  });
+
+  it('colors the model-scoped figure by tier', async () => {
+    vi.stubEnv('NO_COLOR', '');
+
+    const { output } = await captureStdout(() =>
+      runRenderPromax([], makeStream(makeInput([
+        { display_name: 'Fable', utilization: 95, resets_at: null },
+      ]))),
+    );
+
+    expect(output).toContain('Fable \x1b[31m95%\x1b[0m');
+  });
+});

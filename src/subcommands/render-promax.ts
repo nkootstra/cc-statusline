@@ -8,6 +8,7 @@ import {
   formatOptionalHint,
   chooseLayout,
 } from '../statusline/format';
+import { buildModelScopedSegments } from '../statusline/model-scoped';
 
 // ---------------------------------------------------------------------------
 // Segment builders
@@ -66,19 +67,22 @@ function renderLine(input: ReturnType<typeof parseStdin>): string {
     input.rate_limits?.seven_day?.used_percentage,
     input.rate_limits?.seven_day?.resetsAt,
   );
+  const modelScopedSegs = buildModelScopedSegments(input.rate_limits?.model_scoped);
   const costSeg = buildCostSegment(input.cost.total_cost_usd);
 
   const layout = chooseLayout(process.stdout.columns);
 
   if (layout === 'wide') {
-    return [modelSeg, ctxSeg, fiveHourSeg, sevenDaySeg, costSeg].filter(Boolean).join(SEP) + '\n';
+    return [modelSeg, ctxSeg, fiveHourSeg, sevenDaySeg, ...modelScopedSegs, costSeg]
+      .filter(Boolean)
+      .join(SEP) + '\n';
   }
 
   // Narrow layout: split into two lines.
   // Row 1: model · ctx
-  // Row 2: 5h · 7d · $cost
+  // Row 2: 5h · 7d · <model-scoped windows> · $cost
   const row1 = [modelSeg, ctxSeg].filter(Boolean).join(SEP);
-  const row2 = [fiveHourSeg, sevenDaySeg, costSeg].filter(Boolean).join(SEP);
+  const row2 = [fiveHourSeg, sevenDaySeg, ...modelScopedSegs, costSeg].filter(Boolean).join(SEP);
   return row1 + '\n' + row2 + '\n';
 }
 

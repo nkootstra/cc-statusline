@@ -49,6 +49,15 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function goldenFableRow(resetsAt: string = new Date(2026, 4, 5, 16, 22, 0).toISOString()) {
+  return {
+    kind: 'weekly_scoped',
+    percent: 12,
+    resets_at: resetsAt,
+    scope: { model: { display_name: 'Fable' } },
+  };
+}
+
 describe('golden Enterprise output', () => {
   beforeEach(() => {
     vi.stubEnv('NO_COLOR', '1');
@@ -70,13 +79,14 @@ describe('golden Enterprise output', () => {
           used_credits: 78000,
           monthly_limit: 100000,
         },
+        limits: [goldenFableRow()],
       },
       { lastUsageRefreshAt: NOW - 30 * 1000 },
     );
 
     const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
 
-    expect(output).toBe('Opus 4.7 · credits $780.00 / $1000.00 (78%)\n');
+    expect(output).toBe('Opus 4.7 · credits $780.00 / $1000.00 (78%) · Fable 12% [Tue 16:22]\n');
   });
 
   it('renders exact fallback bucket line', async () => {
@@ -92,13 +102,14 @@ describe('golden Enterprise output', () => {
           utilization: 81,
           resets_at: new Date(2026, 4, 5, 16, 22, 0).toISOString(),
         },
+        limits: [goldenFableRow()],
       },
       { lastUsageRefreshAt: NOW - 30 * 1000 },
     );
 
     const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
 
-    expect(output).toBe('Opus 4.7 · 5h 42% [17:22] · 7d 81% [Tue 16:22]\n');
+    expect(output).toBe('Opus 4.7 · 5h 42% [17:22] · 7d 81% [Tue 16:22] · Fable 12% [Tue 16:22]\n');
   });
 
   it('renders exact missing-cache repair line', async () => {
@@ -291,6 +302,7 @@ describe('Scenario 3 (AE7): extra_usage.is_enabled=false — 5h/7d fallback', ()
         extra_usage: { is_enabled: false },
         five_hour: { utilization: 42, resets_at: resetsAt },
         seven_day: { utilization: 67, resets_at: resetsAt },
+        limits: [goldenFableRow(resetsAt)],
       } as Partial<UsageResponse>,
       { lastUsageRefreshAt: injectedNow - 5 * 60 * 1000 },
     );
@@ -913,7 +925,97 @@ describe('Scenario 22: Enterprise credits and session cost stay source-separated
       { now: () => NOW },
     );
 
-    expect(output).toContain('credits $9.19 / $1000.00 (1%) ~ · session $16.00');
+    expect(output).toContain('credits $9.19 / $1000.00 (1%) · Fable 12% ~ · session $16.00');
     expect(output).not.toContain('session $16.00 ~');
+  });
+});
+
+// ============================================================================
+// Scenario 23: model-scoped weekly windows (e.g. Fable) from usage.limits
+// ============================================================================
+
+describe('Scenario 23: model-scoped weekly windows from usage.limits', () => {
+  beforeEach(() => {
+    vi.stubEnv('NO_COLOR', '1');
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 4, 3, 16, 22, 0));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('renders nothing extra when the response carries no limits', async () => {
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage(
+      { limits: undefined },
+      { lastUsageRefreshAt: NOW - 30 * 1000 },
+    );
+
+    const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
+
+    expect(output).toBe('Opus 4.7 · credits $780.00 / $1000.00 (78%)\n');
+  });
+
+  it('renders only model-scoped weekly rows, in server order', async () => {
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage(
+      {
+        extra_usage: { is_enabled: false },
+        five_hour: null,
+        seven_day: null,
+        limits: [
+          { kind: 'session', percent: 42, resets_at: null },
+          { kind: 'weekly_all', percent: 67, resets_at: null },
+          { kind: 'weekly_scoped', percent: 3, resets_at: null, scope: { surface: { display_name: 'Cowork' } } },
+          goldenFableRow(),
+          { kind: 'weekly_scoped', percent: 40, resets_at: null, scope: { model: { display_name: 'Opus' } } },
+        ],
+      } as Partial<UsageResponse>,
+      { lastUsageRefreshAt: NOW - 30 * 1000 },
+    );
+
+    const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
+
+    expect(output).toBe('Opus 4.7 · 5h — · 7d — · Fable 12% [Tue 16:22] · Opus 40%\n');
+  });
+
+  it('skips rows without a percent figure', async () => {
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage(
+      { limits: [{ ...goldenFableRow(), percent: null }] },
+      { lastUsageRefreshAt: NOW - 30 * 1000 },
+    );
+
+    const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
+
+    expect(output).toBe('Opus 4.7 · credits $780.00 / $1000.00 (78%)\n');
+  });
+
+  it('dims model-scoped windows with the cached figures and keeps session cost outside', async () => {
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage(
+      { limits: [goldenFableRow()] },
+      { lastUsageRefreshAt: NOW - 61 * 1000 },
+    );
+
+    const { output } = await runWithCache(cache, makeStdinWithCost(16), { now: () => NOW });
+
+    expect(output).toBe(
+      'Sonnet 4.6 · credits $780.00 / $1000.00 (78%) · Fable 12% [Tue 16:22] ~ · session $16.00\n',
+    );
+  });
+
+  it('colors the model-scoped figure by tier', async () => {
+    vi.stubEnv('NO_COLOR', '');
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage(
+      { limits: [{ ...goldenFableRow(), percent: 95 }] },
+      { lastUsageRefreshAt: NOW - 30 * 1000 },
+    );
+
+    const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
+
+    expect(output).toContain('Fable \x1b[31m95%\x1b[0m');
   });
 });
