@@ -293,6 +293,27 @@ describe('formatResetHint — relative phrasing', () => {
     expect(result).toBe('21:00');
   });
 
+  it('rounds a reset one second before the hour to the hour', () => {
+    const now = new Date(2026, 4, 3, 16, 0, 0).getTime();
+    const reset = new Date(2026, 4, 3, 19, 59, 59, 411).toISOString();
+
+    expect(formatResetHint(reset, now)).toBe('20:00');
+  });
+
+  it('rounds a reset just before midnight onto the next day', () => {
+    const now = new Date(2026, 4, 3, 20, 0, 0).getTime();
+    const reset = new Date(2026, 4, 3, 23, 59, 59, 500).toISOString();
+
+    expect(formatResetHint(reset, now)).toBe('Mon 00:00');
+  });
+
+  it('keeps <5m for a reset that rounds up to five minutes away', () => {
+    const now = new Date(2026, 4, 3, 20, 0, 0).getTime();
+    const reset = new Date(2026, 4, 3, 20, 4, 50).toISOString();
+
+    expect(formatResetHint(reset, now)).toBe('<5m');
+  });
+
   it('future day → includes a weekday abbreviation (not "today")', () => {
     // 3 days ahead is always a different calendar day.
     const futureMs = Date.now() + 3 * 24 * 60 * 60 * 1000;
