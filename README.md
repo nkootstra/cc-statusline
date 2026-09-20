@@ -8,7 +8,7 @@ Usage-aware [Claude Code](https://code.claude.com) statusline. Shows your curren
 npx @nkootstra/cc-statusline --plan pro
 ```
 
-Use `--plan pro`, `--plan max`, or `--plan enterprise`. Pro shows the figures Claude Code pipes to the statusline and needs no credentials. Max and Enterprise read the usage API with Claude Code's own login, which is what shows per-model weekly windows such as Fable; Claude Code 2.1.278 does not forward those on its statusline payload. The installer writes the statusline command into `~/.claude/settings.json`.
+Use `--plan pro`, `--plan max`, or `--plan enterprise`. Pro shows the figures Claude Code pipes to the statusline and needs no credentials. Max and Enterprise read the usage API with Claude Code's own login, which is what shows per-model weekly windows such as Fable; Claude Code 2.1.278 does not forward those on its statusline payload. Pro accounts can use Fable as well, but Anthropic bills it there from usage credits rather than from a weekly Fable allowance ([Claude Fable models on your plan](https://support.claude.com/en/articles/15424964-claude-fable-models-on-your-plan)), so a Pro account has no per-model window to show. The installer writes the statusline command into `~/.claude/settings.json`.
 
 Max installs made with 0.8.0 or earlier used the payload-only renderer. Re-run the installer with `--force` to switch.
 
