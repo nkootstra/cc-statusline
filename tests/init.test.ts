@@ -9,9 +9,9 @@ import {
   type SpawnClaudeResult,
 } from '../src/subcommands/init';
 import { readCache, writeCache, type Cache } from '../src/cache/store';
-import { CredentialNotFoundError } from '../src/credentials/discover';
+import { CredentialFileError, CredentialNotFoundError } from '../src/credentials/discover';
 import { readSettings } from '../src/settings/mutator';
-import type { OAuthCredentials } from '../src/credentials/envelope';
+import { InvalidEnvelopeError, type OAuthCredentials } from '../src/credentials/envelope';
 import type { UsageResponse } from '../src/oauth/types';
 
 const NOW = Date.parse('2026-07-28T12:00:00Z');
@@ -381,6 +381,47 @@ describe('guided Claude Code authentication recovery', () => {
     expect(output).not.toContain(rawError);
     expect(spawnClaude).not.toHaveBeenCalled();
     expect(fileHash(cachePath(tmpDir))).toBe(before);
+  });
+
+  it('names the missing field when the keychain envelope is malformed', async () => {
+    const tmpDir = makeTmpDir();
+    const discoverImpl = vi.fn().mockRejectedValue(new InvalidEnvelopeError('refreshToken'));
+    const spawnClaude = vi.fn();
+    const { code, output } = await captureStderr(() =>
+      runInit(['--plan=enterprise', '--force'], baseDeps(tmpDir, {
+        isInteractive: true,
+        discoverImpl: discoverImpl as InitDeps['discoverImpl'],
+        spawnClaude,
+      })),
+    );
+
+    expect(code).toBe(3);
+    expect(output).toBe(
+      'init: could not read Claude Code credentials: ' +
+      'the macOS keychain item "Claude Code-credentials" is missing or has an invalid refreshToken field.\n',
+    );
+    expect(spawnClaude).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['invalid-envelope', 'expiresAt', 'is missing or has an invalid expiresAt field'],
+    ['invalid-json', undefined, 'is not valid JSON'],
+    ['permission-denied', undefined, 'is not readable; check its ownership and mode'],
+    ['io-error', undefined, 'could not be read'],
+  ] as const)('names the discovered file when it fails with %s', async (reason, field, expected) => {
+    const tmpDir = makeTmpDir();
+    const filePath = path.join(tmpDir, '.claude', '.credentials.json');
+    const discoverImpl = vi.fn().mockRejectedValue(
+      new CredentialFileError(`Credential file ${filePath} is unreadable`, filePath, reason, field),
+    );
+    const { code, output } = await captureStderr(() =>
+      runInit(['--plan=enterprise', '--non-interactive'], baseDeps(tmpDir, {
+        discoverImpl: discoverImpl as InitDeps['discoverImpl'],
+      })),
+    );
+
+    expect(code).toBe(3);
+    expect(output).toBe(`init: could not read Claude Code credentials: ${filePath} ${expected}.\n`);
   });
 
   it.each([
@@ -771,8 +812,35 @@ describe('explicit credential path security', () => {
     );
 
     expect(code).toBe(2);
-    expect(output).toContain('could not read credentials from --credentials-path');
+    expect(output).toBe(
+      'init: could not read credentials from --credentials-path: the file is not valid JSON.\n',
+    );
     expect(output).not.toContain(leakedToken);
+  });
+
+  it('names the missing field but never the path of a malformed explicit file', async () => {
+    const home = makeTmpDir();
+    const credentialsFile = path.join(home, 'credentials.json');
+    fs.writeFileSync(
+      credentialsFile,
+      JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-must-not-appear', expiresAt: 1 } }),
+      'utf8',
+    );
+
+    const { code, output } = await captureStderr(() =>
+      runInit([
+        '--plan=enterprise',
+        `--credentials-path=${credentialsFile}`,
+      ], baseDeps(home)),
+    );
+
+    expect(code).toBe(2);
+    expect(output).toBe(
+      'init: could not read credentials from --credentials-path: ' +
+      'the file is missing or has an invalid refreshToken field.\n',
+    );
+    expect(output).not.toContain(credentialsFile);
+    expect(output).not.toContain('sk-ant-must-not-appear');
   });
 
   it('rejects a path outside the home directory', async () => {

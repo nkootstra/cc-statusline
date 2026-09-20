@@ -1,5 +1,10 @@
 import type { SpawnSyncOptions } from 'node:child_process';
-import { CredentialNotFoundError, discover } from '../credentials/discover';
+import {
+  CredentialFileError,
+  CredentialNotFoundError,
+  discover,
+  KEYCHAIN_SERVICE,
+} from '../credentials/discover';
 import {
   canonicalizeFileCredentialSource,
   loadCredentialSource,
@@ -7,7 +12,7 @@ import {
 } from '../credentials/source';
 import { readCache, type Cache } from '../cache/store';
 import { fetchUsage } from '../oauth/client';
-import type { OAuthCredentials } from '../credentials/envelope';
+import { InvalidEnvelopeError, type OAuthCredentials } from '../credentials/envelope';
 import type {
   FetchUsageResult,
   UsageResponse,
@@ -179,6 +184,33 @@ function printNetworkFailure(
   );
 }
 
+function describeCredentialFileFailure(error: CredentialFileError, subject: string): string {
+  switch (error.reason) {
+    case 'invalid-envelope':
+      return error.missingField === undefined
+        ? `${subject} has an invalid credential envelope`
+        : `${subject} is missing or has an invalid ${error.missingField} field`;
+    case 'invalid-json':
+      return `${subject} is not valid JSON`;
+    case 'permission-denied':
+      return `${subject} is not readable; check its ownership and mode`;
+    case 'io-error':
+      return `${subject} could not be read`;
+  }
+}
+
+// Only typed discovery errors are explained: they carry a field name or a
+// well-known path, whereas an unexpected error could quote the credential.
+function describeDiscoveryFailure(error: unknown): string | null {
+  if (error instanceof InvalidEnvelopeError) {
+    return `the macOS keychain item "${KEYCHAIN_SERVICE}" is missing or has an invalid ${error.missingField} field`;
+  }
+  if (error instanceof CredentialFileError) {
+    return describeCredentialFileFailure(error, error.filePath);
+  }
+  return null;
+}
+
 function printManualAuthInstructions(): void {
   process.stderr.write(
     'init: Claude Code authentication is required. Run:\n' +
@@ -198,8 +230,11 @@ async function recoverAutomaticCredentials(
     credentials = await options.discoverFn(options.discoverOptions);
   } catch (error: unknown) {
     if (!(error instanceof CredentialNotFoundError)) {
+      const reason = describeDiscoveryFailure(error);
       process.stderr.write(
-        'init: could not read Claude Code credentials.\n',
+        reason === null
+          ? 'init: could not read Claude Code credentials.\n'
+          : `init: could not read Claude Code credentials: ${reason}.\n`,
       );
       return { kind: 'exit', code: 3 };
     }
@@ -327,9 +362,14 @@ export async function prepareEnterprise(
       credentials = await loadCredentialSource(source, {
         homedirOverride: options.homedir,
       });
-    } catch {
+    } catch (error: unknown) {
+      const reason = error instanceof CredentialFileError
+        ? describeCredentialFileFailure(error, 'the file')
+        : null;
       process.stderr.write(
-        'init: could not read credentials from --credentials-path.\n',
+        reason === null
+          ? 'init: could not read credentials from --credentials-path.\n'
+          : `init: could not read credentials from --credentials-path: ${reason}.\n`,
       );
       return { kind: 'exit', code: 2 };
     }

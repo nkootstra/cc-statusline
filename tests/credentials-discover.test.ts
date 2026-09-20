@@ -9,7 +9,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { join } from 'node:path';
 import { decodeEnvelope, InvalidEnvelopeError } from '../src/credentials/envelope.js';
-import { discover, CredentialNotFoundError } from '../src/credentials/discover.js';
+import {
+  discover,
+  CredentialFileError,
+  CredentialNotFoundError,
+} from '../src/credentials/discover.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -540,6 +544,58 @@ describe('discover', () => {
 
     await expect(rejection).rejects.toThrow(/permission denied/i);
     await expect(rejection).rejects.toThrow(dotCredPath);
+  });
+
+  // ── Typed file failures ────────────────────────────────────────────────
+
+  it('types a malformed file envelope with its path and missing field', async () => {
+    const spawnFn = makeFakeSpawn('', 44);
+    const readFileFn = makeFakeReadFile({
+      [dotCredPath]: JSON.stringify({ claudeAiOauth: { accessToken: 'a', expiresAt: 1 } }),
+    });
+
+    const rejection = discover({
+      platformOverride: 'darwin',
+      homedirOverride: HOME,
+      spawnOverride: spawnFn as unknown as typeof import('node:child_process').spawn,
+      readFileOverride: readFileFn,
+    });
+
+    await expect(rejection).rejects.toBeInstanceOf(CredentialFileError);
+    await expect(rejection).rejects.toMatchObject({
+      filePath: dotCredPath,
+      reason: 'invalid-envelope',
+      missingField: 'refreshToken',
+    });
+  });
+
+  it.each([
+    ['invalid JSON', '{ not json', 'invalid-json'],
+    [
+      'EACCES',
+      Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }),
+      'permission-denied',
+    ],
+    [
+      'another I/O failure',
+      Object.assign(new Error('EISDIR: illegal operation on a directory'), { code: 'EISDIR' }),
+      'io-error',
+    ],
+  ])('types a file that fails with %s', async (_label, contents, reason) => {
+    const readFileFn = makeFakeReadFile({ [dotCredPath]: contents });
+
+    const rejection = discover({
+      platformOverride: 'linux',
+      homedirOverride: HOME,
+      readFileOverride: readFileFn,
+    });
+
+    await expect(rejection).rejects.toBeInstanceOf(CredentialFileError);
+    await expect(rejection).rejects.toMatchObject({
+      filePath: dotCredPath,
+      reason,
+      missingField: undefined,
+    });
   });
 
   // ── No shell expansion ──────────────────────────────────────────────────

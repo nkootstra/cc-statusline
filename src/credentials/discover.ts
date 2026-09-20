@@ -23,7 +23,7 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import { readFile as nodeReadFile } from 'node:fs/promises';
 import { homedir as nodeHomedir } from 'node:os';
 import { join } from 'node:path';
-import { decodeEnvelope, type OAuthCredentials } from './envelope.js';
+import { decodeEnvelope, InvalidEnvelopeError, type OAuthCredentials } from './envelope.js';
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -33,6 +33,26 @@ export class CredentialNotFoundError extends Error {
   constructor(public readonly pathsTried: string[]) {
     super(`No Claude Code credentials found. Tried:\n  - ${pathsTried.join('\n  - ')}`);
     this.name = 'CredentialNotFoundError';
+  }
+}
+
+export type CredentialFileFailure =
+  | 'permission-denied'
+  | 'io-error'
+  | 'invalid-json'
+  | 'invalid-envelope';
+
+// Carries only the path, a fixed reason and an envelope field name, so callers
+// can explain the failure without repeating a message that might quote the file.
+export class CredentialFileError extends Error {
+  constructor(
+    message: string,
+    public readonly filePath: string,
+    public readonly reason: CredentialFileFailure,
+    public readonly missingField: string | undefined = undefined,
+  ) {
+    super(message);
+    this.name = 'CredentialFileError';
   }
 }
 
@@ -59,7 +79,7 @@ export interface DiscoverOptions {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-const KEYCHAIN_SERVICE = 'Claude Code-credentials';
+export const KEYCHAIN_SERVICE = 'Claude Code-credentials';
 const SPAWN_TIMEOUT_MS = 10_000;
 
 /**
@@ -161,13 +181,17 @@ export async function readCredentialFile(
       return null;
     }
     if (e.code === 'EACCES') {
-      throw new Error(
+      throw new CredentialFileError(
         `Permission denied reading credential file: ${filePath} — check file ownership and mode.`,
+        filePath,
+        'permission-denied',
       );
     }
     // Any other I/O error: propagate with file context.
-    throw new Error(
+    throw new CredentialFileError(
       `Failed to read credential file ${filePath}: ${e.message ?? String(err)}`,
+      filePath,
+      'io-error',
     );
   }
 
@@ -175,7 +199,11 @@ export async function readCredentialFile(
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new Error(`Credential file ${filePath} contains invalid JSON`);
+    throw new CredentialFileError(
+      `Credential file ${filePath} contains invalid JSON`,
+      filePath,
+      'invalid-json',
+    );
   }
 
   // decodeEnvelope throws InvalidEnvelopeError on missing/invalid fields.
@@ -183,8 +211,11 @@ export async function readCredentialFile(
   try {
     return decodeEnvelope(parsed);
   } catch (err) {
-    throw new Error(
+    throw new CredentialFileError(
       `Credential file ${filePath} has an invalid envelope: ${(err as Error).message}`,
+      filePath,
+      'invalid-envelope',
+      err instanceof InvalidEnvelopeError ? err.missingField : undefined,
     );
   }
 }
