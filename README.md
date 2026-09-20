@@ -52,8 +52,8 @@ Older caches are intentionally ignored. Until init creates a v4 cache, the statu
 
 ## What you'll see
 
-- **Pro / Max**: model name plus colorized 5-hour and 7-day rate-limit utilization.
-- **Enterprise**: model name plus cached monthly credits used / credits limit when monthly credits are enabled. Falls back to colorized 5-hour and 7-day rate-limit utilization. The credits figure comes from a local OAuth usage cache that is refreshed in the background every 60 seconds; a ` ~` marker appears when the cached value is older than that. The stale window is configurable with `CC_STATUSLINE_ENTERPRISE_STALE_MS` and clamped to 10–300 seconds. When Claude Code reports a non-zero current-session cost, it appears separately as `session $...`; this is Claude Code's client-side estimate and may differ from actual billing. If authentication cannot be repaired from the recorded source, the statusline shows `run init to repair auth`.
+- **Pro / Max**: model name plus colorized 5-hour and 7-day rate-limit utilization. If Claude Code ever forwards per-model weekly windows (for example Fable) on its statusline payload, each one is appended after the 7-day figure under the label the server sends. As of Claude Code 2.1.278 it does not, so use the Enterprise renderer to see them today.
+- **Enterprise**: model name plus cached monthly credits used / credits limit when monthly credits are enabled. Falls back to colorized 5-hour and 7-day rate-limit utilization. Per-model weekly windows from the usage endpoint's `limits` rows (for example Fable) are appended after that figure under the label the server sends. The credits figure comes from a local OAuth usage cache that is refreshed in the background every 60 seconds; a ` ~` marker appears when the cached value is older than that. The stale window is configurable with `CC_STATUSLINE_ENTERPRISE_STALE_MS` and clamped to 10–300 seconds. When Claude Code reports a non-zero current-session cost, it appears separately as `session $...`; this is Claude Code's client-side estimate and may differ from actual billing. If authentication cannot be repaired from the recorded source, the statusline shows `run init to repair auth`.
 
 The enterprise renderer also enforces a cooldown after API `429` responses. If the server asks a retry delay, cc-statusline will wait before refreshing usage again, and this cooldown can grow across repeated 429s (bounded to five minutes) to avoid repeated rate-limit churn.
 
@@ -62,13 +62,13 @@ Pro and Max use the same renderer. They are separate installer choices only beca
 Example Pro / Max output:
 
 ```text
-Opus 4.7 · 5h 102% · 7d 81% [Tue 20:00]
+Opus 4.7 · 5h 102% · 7d 81% [Tue 20:00] · Fable 12% [Tue 20:00]
 ```
 
 Example Enterprise output:
 
 ```text
-Opus 4.7 · credits $780.00 / $1000.00 (78%) · session $0.08
+Opus 4.7 · credits $780.00 / $1000.00 (78%) · Fable 12% [Tue 20:00] · session $0.08
 ```
 
 ## Check version
@@ -95,11 +95,11 @@ The v4 cache at `~/.claude/cc-statusline/cache.json` is mode `0600` and contains
 
 During `init`, automatic credential discovery uses this order:
 
-1. macOS Keychain service `Claude Code-credentials` (macOS only)
+1. macOS Keychain service `Claude Code-credentials` for the current user's account, the item Claude Code itself reads and writes, then the same service for any account (macOS only)
 2. `~/.claude/.credentials.json`
 3. `~/.claude/credentials.json`
 
-Automatic discovery is recorded as the `Claude Code` credential source. `--credentials-path=<path>` instead records an `explicit file` source. The explicit path is authoritative: background refresh rereads that file and does not fall back to Keychain or another Claude Code credential location. The path is resolved with `realpath`, must remain a regular file inside the user's home directory, and is never printed by `doctor`.
+Automatic discovery is recorded as the `Claude Code` credential source. When a discovered credential cannot be decoded, init names the source and the offending envelope field; it never prints token values or an explicit `--credentials-path` path. `--credentials-path=<path>` instead records an `explicit file` source. The explicit path is authoritative: background refresh rereads that file and does not fall back to Keychain or another Claude Code credential location. The path is resolved with `realpath`, must remain a regular file inside the user's home directory, and is never printed by `doctor`.
 
 Only the `accessToken` is copied into the cache and sent as a Bearer token to the Anthropic usage endpoint. The cache is located at `~/.claude/cc-statusline/cache.json`, or under `$CLAUDE_CONFIG_DIR/cc-statusline/cache.json` when `CLAUDE_CONFIG_DIR` is set.
 

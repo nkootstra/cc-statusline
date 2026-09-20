@@ -1,4 +1,14 @@
-import type { ExtraUsage, UsageBucket, UsageResponse } from './types';
+import type {
+  ExtraUsage,
+  UsageBucket,
+  UsageLimitRow,
+  UsageLimitScope,
+  UsageResponse,
+} from './types';
+import {
+  sanitizeDisplayName,
+  type ModelScopedWindow,
+} from '../statusline/model-scoped';
 
 const INVALID_USAGE_FIELD = Symbol('invalid-usage-field');
 
@@ -15,18 +25,29 @@ interface ExtraUsageJson {
   monthly_limit?: unknown;
 }
 
+interface UsageLimitRowJson {
+  kind?: unknown;
+  percent?: unknown;
+  resets_at?: unknown;
+  scope?: unknown;
+}
+
 interface UsageResponseJson {
   five_hour?: unknown;
   seven_day?: unknown;
   seven_day_sonnet?: unknown;
   seven_day_opus?: unknown;
   extra_usage?: unknown;
+  limits?: unknown;
 }
 
+// The endpoint sends null, not an absent key, for figures it has no value for
+// (a window that has not started, or credits on an account without extra
+// usage), so null is read as absent everywhere a figure is optional.
 function optionalFiniteNumber(
   value: unknown,
 ): number | undefined | typeof INVALID_USAGE_FIELD {
-  if (value === undefined) return undefined;
+  if (value === undefined || value === null) return undefined;
   return typeof value === 'number' && Number.isFinite(value)
     ? value
     : INVALID_USAGE_FIELD;
@@ -35,7 +56,7 @@ function optionalFiniteNumber(
 function optionalString(
   value: unknown,
 ): string | undefined | typeof INVALID_USAGE_FIELD {
-  if (value === undefined) return undefined;
+  if (value === undefined || value === null) return undefined;
   return typeof value === 'string' ? value : INVALID_USAGE_FIELD;
 }
 
@@ -48,6 +69,7 @@ function decodeUsageBucket(
   }
 
   const candidate = value as UsageBucketJson;
+  if (candidate.utilization === null) return null;
   const utilization = optionalFiniteNumber(candidate.utilization);
   const resetsAtSnake = optionalString(candidate.resets_at);
   const resetsAtCamel = optionalString(candidate.resetsAt);
@@ -96,34 +118,111 @@ function decodeExtraUsage(
   };
 }
 
-export function decodeUsageResponse(value: unknown): UsageResponse | null {
+function decodeLimitScope(value: unknown): UsageLimitScope | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return null;
+    return undefined;
+  }
+
+  const model = (value as { model?: unknown }).model;
+  const displayName =
+    typeof model === 'object' && model !== null && !Array.isArray(model)
+      ? sanitizeDisplayName((model as { display_name?: unknown }).display_name)
+      : undefined;
+  return displayName === undefined ? {} : { model: { display_name: displayName } };
+}
+
+function decodeUsageLimitRow(value: unknown): UsageLimitRow | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const candidate = value as UsageLimitRowJson;
+  if (typeof candidate.kind !== 'string') return undefined;
+  const percent = candidate.percent;
+  if (percent !== null && (typeof percent !== 'number' || !Number.isFinite(percent))) {
+    return undefined;
+  }
+  const scope = decodeLimitScope(candidate.scope);
+  return {
+    kind: candidate.kind,
+    percent: percent ?? null,
+    resets_at: typeof candidate.resets_at === 'string' ? candidate.resets_at : null,
+    ...(scope === undefined ? {} : { scope }),
+  };
+}
+
+// The server defines the meter rows and may add new ones without a client
+// release, so an unreadable row is dropped rather than invalidating the
+// whole response (which would blank the statusline until the next init).
+function decodeUsageLimits(value: unknown): UsageLimitRow[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const rows: UsageLimitRow[] = [];
+  for (const entry of value) {
+    const row = decodeUsageLimitRow(entry);
+    if (row !== undefined) rows.push(row);
+  }
+  return rows;
+}
+
+export function modelScopedWindows(usage: UsageResponse): ModelScopedWindow[] {
+  const windows: ModelScopedWindow[] = [];
+  for (const row of usage.limits ?? []) {
+    if (row.kind !== 'weekly_scoped') continue;
+    const displayName = row.scope?.model?.display_name;
+    if (displayName === undefined) continue;
+    windows.push({
+      display_name: displayName,
+      utilization: row.percent,
+      resets_at: row.resets_at,
+    });
+  }
+  return windows;
+}
+
+export type UsageDecodeResult =
+  | { kind: 'ok'; usage: UsageResponse }
+  | { kind: 'invalid'; field: string };
+
+function invalidField(field: string): UsageDecodeResult {
+  return { kind: 'invalid', field };
+}
+
+// Names only the top-level field that failed, never its value, so the result
+// is safe to print and log.
+export function decodeUsage(value: unknown): UsageDecodeResult {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return invalidField('body');
   }
 
   const candidate = value as UsageResponseJson;
   const fiveHour = decodeUsageBucket(candidate.five_hour);
+  if (fiveHour === INVALID_USAGE_FIELD) return invalidField('five_hour');
   const sevenDay = decodeUsageBucket(candidate.seven_day);
+  if (sevenDay === INVALID_USAGE_FIELD) return invalidField('seven_day');
   const sevenDaySonnet = decodeUsageBucket(candidate.seven_day_sonnet);
+  if (sevenDaySonnet === INVALID_USAGE_FIELD) return invalidField('seven_day_sonnet');
   const sevenDayOpus = decodeUsageBucket(candidate.seven_day_opus);
+  if (sevenDayOpus === INVALID_USAGE_FIELD) return invalidField('seven_day_opus');
   const extraUsage = decodeExtraUsage(candidate.extra_usage);
-  if (
-    fiveHour === INVALID_USAGE_FIELD ||
-    sevenDay === INVALID_USAGE_FIELD ||
-    sevenDaySonnet === INVALID_USAGE_FIELD ||
-    sevenDayOpus === INVALID_USAGE_FIELD ||
-    extraUsage === INVALID_USAGE_FIELD
-  ) {
-    return null;
-  }
+  if (extraUsage === INVALID_USAGE_FIELD) return invalidField('extra_usage');
+  const limits = decodeUsageLimits(candidate.limits);
 
   return {
-    ...(fiveHour === undefined ? {} : { five_hour: fiveHour }),
-    ...(sevenDay === undefined ? {} : { seven_day: sevenDay }),
-    ...(sevenDaySonnet === undefined
-      ? {}
-      : { seven_day_sonnet: sevenDaySonnet }),
-    ...(sevenDayOpus === undefined ? {} : { seven_day_opus: sevenDayOpus }),
-    ...(extraUsage === undefined ? {} : { extra_usage: extraUsage }),
+    kind: 'ok',
+    usage: {
+      ...(fiveHour === undefined ? {} : { five_hour: fiveHour }),
+      ...(sevenDay === undefined ? {} : { seven_day: sevenDay }),
+      ...(sevenDaySonnet === undefined
+        ? {}
+        : { seven_day_sonnet: sevenDaySonnet }),
+      ...(sevenDayOpus === undefined ? {} : { seven_day_opus: sevenDayOpus }),
+      ...(extraUsage === undefined ? {} : { extra_usage: extraUsage }),
+      ...(limits === undefined ? {} : { limits }),
+    },
   };
+}
+
+export function decodeUsageResponse(value: unknown): UsageResponse | null {
+  const result = decodeUsage(value);
+  return result.kind === 'ok' ? result.usage : null;
 }

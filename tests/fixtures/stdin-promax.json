@@ -37,6 +37,13 @@
     "seven_day_opus": {
       "used_percentage": 10,
       "resetsAt": 1714934400
-    }
+    },
+    "model_scoped": [
+      {
+        "display_name": "Fable",
+        "utilization": 12,
+        "resets_at": "2024-05-05T18:40:00.000Z"
+      }
+    ]
   }
 }

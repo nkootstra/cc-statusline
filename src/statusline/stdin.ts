@@ -7,6 +7,10 @@
  * `parseStdin` is defensive: it never throws and always returns a typed object or null.
  */
 
+import { sanitizeDisplayName, type ModelScopedWindow } from './model-scoped';
+
+export type { ModelScopedWindow };
+
 export interface Model {
   id: string;
   display_name: string;
@@ -44,6 +48,14 @@ export interface RateLimits {
   five_hour?: RateLimitWindow;
   seven_day?: RateLimitWindow;
   seven_day_opus?: RateLimitWindow;
+  /**
+   * Per-model weekly windows (e.g. Fable). Claude Code 2.1.278 does not put
+   * these on the statusline payload; it only exposes them to its `/usage`
+   * panel and usage JSON, whose row shape this mirrors so the renderer picks
+   * them up if a later version forwards them. Absent when nothing is known;
+   * an empty array means the endpoint answered and listed none.
+   */
+  model_scoped?: ModelScopedWindow[];
 }
 
 /**
@@ -138,12 +150,38 @@ function normalizeRateLimitWindow(raw: unknown): RateLimitWindow | undefined {
   return { used_percentage: used, resetsAt };
 }
 
+function normalizeModelScopedWindow(raw: unknown): ModelScopedWindow | undefined {
+  if (!isRecord(raw)) return undefined;
+  const displayName = sanitizeDisplayName(raw['display_name']);
+  if (displayName === undefined) return undefined;
+  const utilization = raw['utilization'];
+  const resetsAt = raw['resets_at'] ?? raw['resetsAt'];
+  return {
+    display_name: displayName,
+    utilization:
+      typeof utilization === 'number' && Number.isFinite(utilization) ? utilization : null,
+    resets_at: typeof resetsAt === 'string' ? resetsAt : null,
+  };
+}
+
+function normalizeModelScopedWindows(raw: unknown): ModelScopedWindow[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const windows: ModelScopedWindow[] = [];
+  for (const entry of raw) {
+    const window = normalizeModelScopedWindow(entry);
+    if (window !== undefined) windows.push(window);
+  }
+  return windows;
+}
+
 function normalizeRateLimits(raw: unknown): RateLimits | undefined {
   if (!isRecord(raw)) return undefined;
+  const modelScoped = normalizeModelScopedWindows(raw['model_scoped']);
   return {
     five_hour: normalizeRateLimitWindow(raw['five_hour']),
     seven_day: normalizeRateLimitWindow(raw['seven_day']),
     seven_day_opus: normalizeRateLimitWindow(raw['seven_day_opus']),
+    ...(modelScoped === undefined ? {} : { model_scoped: modelScoped }),
   };
 }
 

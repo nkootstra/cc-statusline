@@ -20,5 +20,37 @@
     "utilization": 78,
     "used_credits": 78000,
     "monthly_limit": 100000
-  }
+  },
+  "limits": [
+    {
+      "kind": "session",
+      "group": "session",
+      "percent": 42,
+      "resets_at": "2026-05-03T18:00:00.000Z",
+      "severity": "normal",
+      "is_active": true,
+      "scope": null
+    },
+    {
+      "kind": "weekly_all",
+      "group": "weekly",
+      "percent": 67,
+      "resets_at": "2026-05-10T00:00:00.000Z",
+      "severity": "normal",
+      "is_active": true,
+      "scope": null
+    },
+    {
+      "kind": "weekly_scoped",
+      "group": "weekly",
+      "percent": 12,
+      "resets_at": "2026-05-10T00:00:00.000Z",
+      "severity": "normal",
+      "is_active": true,
+      "scope": {
+        "model": { "display_name": "Fable" },
+        "surface": null
+      }
+    }
+  ]
 }

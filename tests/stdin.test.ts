@@ -66,6 +66,13 @@ describe('parseStdin — Pro/Max fixture', () => {
     });
   });
 
+  it('populates rate_limits.model_scoped', () => {
+    result = parseStdin(loadFixture('stdin-promax.json'));
+    expect(result?.rate_limits?.model_scoped).toEqual([
+      { display_name: 'Fable', utilization: 12, resets_at: '2024-05-05T18:40:00.000Z' },
+    ]);
+  });
+
   it('accepts Claude Code snake_case reset timestamps', () => {
     const result = parseStdin(JSON.stringify({
       rate_limits: {
@@ -202,5 +209,72 @@ describe('parseStdin — invalid input', () => {
     expect(result?.context_window).toBeUndefined();
     // exceeds_200k_tokens defaults to false.
     expect(result?.exceeds_200k_tokens).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rate_limits.model_scoped — per-model weekly windows (e.g. Fable)
+// ---------------------------------------------------------------------------
+
+describe('parseStdin — rate_limits.model_scoped', () => {
+  function parseModelScoped(modelScoped: unknown) {
+    return parseStdin(JSON.stringify({ rate_limits: { model_scoped: modelScoped } }))
+      ?.rate_limits?.model_scoped;
+  }
+
+  it('is undefined when absent', () => {
+    expect(parseStdin(JSON.stringify({ rate_limits: {} }))?.rate_limits?.model_scoped)
+      .toBeUndefined();
+  });
+
+  it('is undefined when not an array', () => {
+    expect(parseModelScoped('nope')).toBeUndefined();
+    expect(parseModelScoped({ display_name: 'Fable', utilization: 1 })).toBeUndefined();
+  });
+
+  it('preserves an empty array (endpoint answered, no per-model windows)', () => {
+    expect(parseModelScoped([])).toEqual([]);
+  });
+
+  it('keeps null utilization and resets_at as null', () => {
+    expect(parseModelScoped([
+      { display_name: 'Fable', utilization: null, resets_at: null },
+    ])).toEqual([{ display_name: 'Fable', utilization: null, resets_at: null }]);
+  });
+
+  it('normalizes non-numeric utilization and non-string resets_at to null', () => {
+    expect(parseModelScoped([
+      { display_name: 'Fable', utilization: '12', resets_at: 1714934400 },
+      { display_name: 'Opus', utilization: Number.NaN },
+    ])).toEqual([
+      { display_name: 'Fable', utilization: null, resets_at: null },
+      { display_name: 'Opus', utilization: null, resets_at: null },
+    ]);
+  });
+
+  it('accepts camelCase resetsAt', () => {
+    expect(parseModelScoped([
+      { display_name: 'Fable', utilization: 12, resetsAt: '2024-05-05T18:40:00.000Z' },
+    ])).toEqual([
+      { display_name: 'Fable', utilization: 12, resets_at: '2024-05-05T18:40:00.000Z' },
+    ]);
+  });
+
+  it('drops entries without a display name and non-object entries', () => {
+    expect(parseModelScoped([
+      { utilization: 12, resets_at: null },
+      { display_name: '', utilization: 12 },
+      { display_name: 7, utilization: 12 },
+      'Fable',
+      null,
+      { display_name: 'Fable', utilization: 12 },
+    ])).toEqual([{ display_name: 'Fable', utilization: 12, resets_at: null }]);
+  });
+
+  it('strips control characters from the display name', () => {
+    expect(parseModelScoped([
+      { display_name: ' Fa\u001b[31mble\n ', utilization: 12 },
+      { display_name: '\u0007\t', utilization: 12 },
+    ])).toEqual([{ display_name: 'Fable', utilization: 12, resets_at: null }]);
   });
 });
