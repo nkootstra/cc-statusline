@@ -30,10 +30,14 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-const STALE_THRESHOLD_DEFAULT_MS = 60 * 1000; // 60 seconds
+const STALE_THRESHOLD_DEFAULT_MS = 120 * 1000; // 2 minutes
 const STALE_THRESHOLD_MIN_MS = 10 * 1000; // 10 seconds
-const STALE_THRESHOLD_MAX_MS = 300 * 1000; // 5 minutes
+const STALE_THRESHOLD_MAX_MS = 900 * 1000; // 15 minutes
 const STALE_THRESHOLD_ENV = 'CC_STATUSLINE_ENTERPRISE_STALE_MS';
+
+// A lone 429 is usually another client on the same account burning the shared
+// quota and the next refresh succeeds, so only a repeat earns the banner.
+const RATE_LIMITED_HINT_MIN_CONSECUTIVE = 2;
 
 /** Remediation hint appended when authState is 'fatal'. Must be ≤ 50 chars. */
 export const AUTH_FATAL_HINT = ' run init to repair auth';
@@ -378,10 +382,10 @@ function renderLine(
       authHint = CLOUDFLARE_HINT;
     } else {
       const cooldownRemainingMs = rateLimitCooldownRemainingMs(cache, nowMs);
-      if (cooldownRemainingMs > 0) {
-        // Currently rate-limited (cooldown not yet elapsed). Render figures
-        // normally — they're still the most recent we know — but tell the user
-        // when retries will resume.
+      if (
+        cooldownRemainingMs > 0 &&
+        cache.consecutiveRateLimitCount >= RATE_LIMITED_HINT_MIN_CONSECUTIVE
+      ) {
         authHint = formatRateLimitedHint(cooldownRemainingMs);
       }
     }

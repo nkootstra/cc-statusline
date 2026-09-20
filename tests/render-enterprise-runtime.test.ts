@@ -326,10 +326,13 @@ describe('refresh process boundary', () => {
 
 describe('stale threshold configuration', () => {
   it.each([
-    ['61 seconds old', undefined, 61_000, 1, true],
-    ['59 seconds old', undefined, 59_000, 0, false],
+    ['121 seconds old', undefined, 121_000, 1, true],
+    ['119 seconds old', undefined, 119_000, 0, false],
     ['custom 30ms threshold', '30', 31_000, 1, true],
     ['minimum threshold clamp', '1000', 11_000, 1, true],
+    ['ten minute threshold', '600000', 599_000, 0, false],
+    ['maximum threshold clamp', '9999999', 901_000, 1, true],
+    ['under the maximum clamp', '9999999', 899_000, 0, false],
   ] as const)(
     '%s',
     async (_label, configuredThreshold, ageMs, spawnCount, stale) => {
@@ -364,6 +367,7 @@ describe('rate-limit rendering', () => {
       makeCacheWithUsage({}, {
         lastUsageRefreshAt: now - 5 * 60_000,
         rateLimitedUntilMs: now + 4 * 60_000,
+        consecutiveRateLimitCount: 2,
       }),
       loadFixture('stdin-enterprise.json'),
       { now: () => now },
@@ -374,6 +378,25 @@ describe('rate-limit rendering', () => {
     expect(output).toContain('retry in 4m');
   });
 
+  it('keeps a single 429 quiet while still honoring its cooldown', async () => {
+    vi.stubEnv('NO_COLOR', '1');
+    const now = Date.now();
+    const { output, spawnCalls } = await runWithCache(
+      makeCacheWithUsage({}, {
+        lastUsageRefreshAt: now - 5 * 60_000,
+        rateLimitedUntilMs: now + 4 * 60_000,
+        nextRefreshAllowedAt: now + 4 * 60_000,
+        consecutiveRateLimitCount: 1,
+      }),
+      loadFixture('stdin-enterprise.json'),
+      { now: () => now },
+    );
+
+    expect(spawnCalls).toHaveLength(0);
+    expect(output).not.toContain(RATE_LIMITED_HINT_PREFIX.trim());
+    expect(output).toContain(STALE_MARKER);
+  });
+
   it('renders cooldowns under one minute in seconds', async () => {
     vi.stubEnv('NO_COLOR', '1');
     const now = Date.now();
@@ -381,6 +404,7 @@ describe('rate-limit rendering', () => {
       makeCacheWithUsage({}, {
         lastUsageRefreshAt: now - 30_000,
         rateLimitedUntilMs: now + 30_000,
+        consecutiveRateLimitCount: 2,
       }),
       loadFixture('stdin-enterprise.json'),
       { now: () => now },
@@ -413,7 +437,7 @@ describe('rate-limit rendering', () => {
         lastUsageRefreshAt: now - 30_000,
         rateLimitedUntilMs: now - 1_000,
         nextRefreshAllowedAt: now + 2 * 60_000,
-        consecutiveRateLimitCount: 1,
+        consecutiveRateLimitCount: 2,
       }),
       loadFixture('stdin-enterprise.json'),
       { now: () => now },
@@ -430,6 +454,7 @@ describe('rate-limit rendering', () => {
       makeCacheWithUsage({}, {
         lastUsageRefreshAt: now - 30_000,
         rateLimitedUntilMs: now + 2 * 60_000,
+        consecutiveRateLimitCount: 2,
       }),
       loadFixture('stdin-enterprise.json'),
       { now: () => now },

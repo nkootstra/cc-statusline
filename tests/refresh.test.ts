@@ -644,14 +644,14 @@ describe('runRefresh', () => {
     expect(readCache(cachePath)).toMatchObject({
       authState: 'ok',
       rateLimitedUntilMs: now + 120_000,
-      nextRefreshAllowedAt: now + 300_000,
+      nextRefreshAllowedAt: now + 120_000,
       consecutiveRateLimitCount: 1,
     });
     expect(readCache(cachePath)?.lastErrorMessage).toContain(
       'x-should-retry: false',
     );
 
-    now += 301_000;
+    now += 121_000;
     await runRefresh([], {
       cachePath,
       now: () => now,
@@ -661,6 +661,48 @@ describe('runRefresh', () => {
       rateLimitedUntilMs: 0,
       nextRefreshAllowedAt: 0,
       consecutiveRateLimitCount: 0,
+    });
+  });
+
+  it('waits five minutes after a 429 without Retry-After and doubles up to fifteen', async () => {
+    await writeCache(makeCache(now), cachePath);
+    const limited = () => ({
+      cachePath,
+      now: () => now,
+      fetchImpl: vi.fn().mockResolvedValue(response(429)),
+    });
+
+    await runRefresh([], limited());
+    expect(readCache(cachePath)).toMatchObject({
+      rateLimitedUntilMs: now + 300_000,
+      nextRefreshAllowedAt: now + 300_000,
+      consecutiveRateLimitCount: 1,
+    });
+    expect(readCache(cachePath)?.lastErrorMessage).toBe(
+      'Usage fetch rate-limited. Retry-After absent; waiting 300s.',
+    );
+
+    now += 301_000;
+    await runRefresh([], limited());
+    expect(readCache(cachePath)).toMatchObject({
+      rateLimitedUntilMs: now + 300_000,
+      nextRefreshAllowedAt: now + 600_000,
+      consecutiveRateLimitCount: 2,
+    });
+
+    now += 601_000;
+    await runRefresh([], limited());
+    expect(readCache(cachePath)).toMatchObject({
+      rateLimitedUntilMs: now + 300_000,
+      nextRefreshAllowedAt: now + 900_000,
+      consecutiveRateLimitCount: 3,
+    });
+
+    now += 901_000;
+    await runRefresh([], limited());
+    expect(readCache(cachePath)).toMatchObject({
+      nextRefreshAllowedAt: now + 900_000,
+      consecutiveRateLimitCount: 4,
     });
   });
 
