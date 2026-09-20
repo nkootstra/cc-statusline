@@ -109,7 +109,55 @@ describe('golden Enterprise output', () => {
 
     const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
 
-    expect(output).toBe('Opus 4.7 · 5h 42% [17:22] · 7d 81% [Tue 16:22] · Fable 12% [Tue 16:22]\n');
+    expect(output).toBe('Opus 4.7 · 5h 42% [17:22] · 7d 81% [Tue 16:22] · Fable 12%\n');
+  });
+
+  // Observed live: the server puts the 7d reset one second before the minute
+  // and the per-model reset on the minute, so the two must compare as shown.
+  it('shows the shared reset once when the 7d reset sits a second before the minute', async () => {
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage(
+      {
+        extra_usage: { is_enabled: false },
+        five_hour: {
+          utilization: 42,
+          resets_at: new Date(2026, 4, 3, 17, 22, 0).toISOString(),
+        },
+        seven_day: {
+          utilization: 81,
+          resets_at: new Date(2026, 4, 5, 16, 21, 59, 411).toISOString(),
+        },
+        limits: [goldenFableRow(new Date(2026, 4, 5, 16, 22, 0, 412).toISOString())],
+      },
+      { lastUsageRefreshAt: NOW - 30 * 1000 },
+    );
+
+    const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
+
+    expect(output).toBe('Opus 4.7 · 5h 42% [17:22] · 7d 81% [Tue 16:22] · Fable 12%\n');
+  });
+
+  it('keeps the per-model reset when it differs from the 7d reset', async () => {
+    const NOW = Date.now();
+    const cache = makeCacheWithUsage(
+      {
+        extra_usage: { is_enabled: false },
+        five_hour: {
+          utilization: 42,
+          resets_at: new Date(2026, 4, 3, 17, 22, 0).toISOString(),
+        },
+        seven_day: {
+          utilization: 81,
+          resets_at: new Date(2026, 4, 5, 16, 22, 0).toISOString(),
+        },
+        limits: [goldenFableRow(new Date(2026, 4, 6, 16, 22, 0).toISOString())],
+      },
+      { lastUsageRefreshAt: NOW - 30 * 1000 },
+    );
+
+    const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
+
+    expect(output).toBe('Opus 4.7 · 5h 42% [17:22] · 7d 81% [Tue 16:22] · Fable 12% [Wed 16:22]\n');
   });
 
   it('renders exact missing-cache repair line', async () => {
