@@ -1067,3 +1067,27 @@ describe('Scenario 23: model-scoped weekly windows from usage.limits', () => {
     expect(output).toContain('Fable \x1b[31m95%\x1b[0m');
   });
 });
+
+describe('gateway mode', () => {
+  beforeEach(() => {
+    vi.stubEnv('NO_COLOR', '1');
+  });
+
+  it('renders only model and context and never refreshes', async () => {
+    const stdin = JSON.stringify({ ...JSON.parse(GOLDEN_STDIN), context_window: { used_percentage: 40 } });
+    const { output, spawnCalls } = await runWithCache(null, stdin, {
+      env: { CLAUDE_CODE_USE_BEDROCK: '1' },
+    });
+    expect(output).toBe('Opus 4.7 · ctx 40%\n');
+    expect(spawnCalls).toHaveLength(0);
+  });
+
+  it('ignores a stale cache', async () => {
+    const cache = makeCacheWithUsage({}, { lastUsageRefreshAt: 0 });
+    const { output, spawnCalls } = await runWithCache(cache, GOLDEN_STDIN, {
+      env: { ANTHROPIC_BASE_URL: 'https://gateway.example.com' },
+    });
+    expect(output).toBe('Opus 4.7\n');
+    expect(spawnCalls).toHaveLength(0);
+  });
+});
