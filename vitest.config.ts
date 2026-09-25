@@ -5,5 +5,6 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     environment: 'node',
     testTimeout: 15000,
+    setupFiles: ['tests/support/clear-gateway-env.ts'],
   },
 });

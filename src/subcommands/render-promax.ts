@@ -9,6 +9,11 @@ import {
   chooseLayout,
 } from '../statusline/format';
 import { buildModelScopedSegments } from '../statusline/model-scoped';
+import { isGatewayMode } from '../statusline/gateway';
+
+export interface RenderPromaxDeps {
+  env?: NodeJS.ProcessEnv;
+}
 
 // ---------------------------------------------------------------------------
 // Segment builders
@@ -51,11 +56,15 @@ function buildCostSegment(totalCostUsd: number): string {
 // Renderer
 // ---------------------------------------------------------------------------
 
-function renderLine(input: ReturnType<typeof parseStdin>): string {
+function renderLine(input: ReturnType<typeof parseStdin>, gatewayMode: boolean): string {
   if (!input) return '';
 
   const modelSeg = buildModelSegment(input.model.display_name);
   const ctxSeg = buildCtxSegment(input.context_window?.used_percentage);
+  if (gatewayMode) {
+    return [modelSeg, ctxSeg].filter(Boolean).join(SEP) + '\n';
+  }
+
   const fiveHour = input.rate_limits?.five_hour;
   const fiveHourSeg = buildRateLimitSegment(
     '5h',
@@ -103,7 +112,9 @@ function renderLine(input: ReturnType<typeof parseStdin>): string {
 export async function runRenderPromax(
   _args: string[] = [],
   stdinSource: NodeJS.ReadableStream = process.stdin,
+  deps: RenderPromaxDeps = {},
 ): Promise<number> {
+  const env = deps.env ?? process.env;
   const raw = await readStdin(stdinSource);
 
   if (raw === null) {
@@ -120,7 +131,7 @@ export async function runRenderPromax(
     return 0;
   }
 
-  const line = renderLine(input);
+  const line = renderLine(input, isGatewayMode(env));
   process.stdout.write(line);
   return 0;
 }

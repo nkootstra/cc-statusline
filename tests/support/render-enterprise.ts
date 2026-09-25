@@ -114,6 +114,7 @@ export async function runWithCache(
   extra: {
     now?: () => number;
     bundlePath?: string;
+    env?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<{
   output: string;
@@ -136,6 +137,7 @@ export async function runWithCache(
           cachePath,
           bundlePath: extra.bundlePath ?? '/bundle.js',
           now: extra.now ?? (() => Date.now()),
+          env: extra.env ?? {},
           spawnRefresh: (command, args, opts) => {
             calls.push({ command, args, opts });
           },

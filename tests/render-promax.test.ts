@@ -686,3 +686,28 @@ describe('Scenario 11: model-scoped weekly windows', () => {
     expect(output).toContain('Fable \x1b[31m95%\x1b[0m');
   });
 });
+
+describe('gateway mode', () => {
+  beforeEach(() => {
+    vi.stubEnv('NO_COLOR', '1');
+  });
+
+  it('renders only model and context when a custom base URL is set', async () => {
+    const { output, exitCode } = await captureStdout(() =>
+      runRenderPromax([], makeStream(loadFixture('stdin-promax.json')), {
+        env: { ANTHROPIC_BASE_URL: 'https://gateway.example.com' },
+      }),
+    );
+    expect(exitCode).toBe(0);
+    expect(output).toBe('claude-sonnet-4-5 · ctx 22%\n');
+  });
+
+  it('renders usage when the base URL points at Anthropic', async () => {
+    const { output } = await captureStdout(() =>
+      runRenderPromax([], makeStream(loadFixture('stdin-promax.json')), {
+        env: { ANTHROPIC_BASE_URL: 'https://api.anthropic.com' },
+      }),
+    );
+    expect(output).toContain('5h');
+  });
+});

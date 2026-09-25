@@ -21,6 +21,7 @@ import type { Cache } from '../cache/store';
 import type { ExtraUsage, UsageBucket, UsageResponse } from '../oauth/types';
 import { modelScopedWindows } from '../oauth/usage';
 import { buildModelScopedSegments } from '../statusline/model-scoped';
+import { isGatewayMode } from '../statusline/gateway';
 import {
   decideEnterpriseRefresh,
   rateLimitCooldownRemainingMs,
@@ -82,6 +83,7 @@ export interface RenderEnterpriseDeps {
   /** Override the spawn call for testing. Receives (command, args, opts). */
   spawnRefresh?: SpawnFn;
   now?: () => number;
+  env?: NodeJS.ProcessEnv;
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +447,15 @@ export async function runRenderEnterprise(
   if (!input) {
     // Non-JSON or empty stdin — silent fail.
     process.stdout.write('\n');
+    return 0;
+  }
+
+  // Subscription usage does not apply behind a gateway, and the OAuth
+  // credentials the refresh needs may not exist at all.
+  if (isGatewayMode(deps.env ?? process.env)) {
+    const modelSeg = buildModelSegment(input.model.display_name);
+    const ctxSeg = buildCtxSegment(input.context_window?.used_percentage);
+    process.stdout.write([modelSeg, ctxSeg].filter(Boolean).join(SEP) + '\n');
     return 0;
   }
 
