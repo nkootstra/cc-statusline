@@ -81,7 +81,7 @@ Opus 4.7 · credits $780.00 / $1000.00 (78%) · Fable 12% [Tue 20:00] · session
 
 ### LLM gateways
 
-When Claude Code is routed through a different LLM gateway or provider, subscription usage does not apply, so every plan shows only the model and context usage and the Max / Enterprise renderer skips the background usage refresh. Gateway mode is on when `ANTHROPIC_BASE_URL` points at a host outside `anthropic.com`, or when `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, or `CLAUDE_CODE_USE_FOUNDRY` is set to `1` or `true`. The statusline inherits Claude Code's environment, including the `env` block in `settings.json`.
+When Claude Code is routed through a different LLM gateway or provider, subscription usage does not apply, so every plan shows only the model and context usage and the Max / Enterprise renderer skips the background usage refresh. Gateway mode is on when `ANTHROPIC_BASE_URL` points at a host outside `anthropic.com`, or when `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, or `CLAUDE_CODE_USE_FOUNDRY` is set to `1`, `true`, `yes`, or `on`. The statusline inherits Claude Code's environment, including the `env` block in `settings.json`.
 
 ```text
 Opus 4.7 · ctx 42%

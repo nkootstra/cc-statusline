@@ -69,10 +69,6 @@ function setTTY(value: boolean | undefined): void {
 beforeEach(() => {
   // Default: non-TTY (no ANSI), no NO_COLOR override
   vi.stubEnv('NO_COLOR', '');
-  vi.stubEnv('ANTHROPIC_BASE_URL', '');
-  vi.stubEnv('CLAUDE_CODE_USE_BEDROCK', '');
-  vi.stubEnv('CLAUDE_CODE_USE_VERTEX', '');
-  vi.stubEnv('CLAUDE_CODE_USE_FOUNDRY', '');
   setTTY(false);
 });
 

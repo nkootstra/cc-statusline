@@ -4,10 +4,10 @@ const PROVIDER_FLAGS = [
   'CLAUDE_CODE_USE_FOUNDRY',
 ] as const;
 
+const TRUTHY_VALUES = new Set(['1', 'true', 'yes', 'on']);
+
 function isTruthyFlag(value: string | undefined): boolean {
-  if (value === undefined) return false;
-  const normalized = value.trim().toLowerCase();
-  return normalized === '1' || normalized === 'true';
+  return value !== undefined && TRUTHY_VALUES.has(value.trim().toLowerCase());
 }
 
 function isAnthropicHost(hostname: string): boolean {
@@ -15,25 +15,15 @@ function isAnthropicHost(hostname: string): boolean {
   return host === 'anthropic.com' || host.endsWith('.anthropic.com');
 }
 
-// Returns a description safe to print: the base URL may embed credentials,
-// so only its hostname is ever surfaced.
-export function detectGateway(env: NodeJS.ProcessEnv): string | null {
-  for (const flag of PROVIDER_FLAGS) {
-    if (isTruthyFlag(env[flag])) return flag;
-  }
+export function isGatewayMode(env: NodeJS.ProcessEnv): boolean {
+  if (PROVIDER_FLAGS.some((flag) => isTruthyFlag(env[flag]))) return true;
 
   const baseUrl = env['ANTHROPIC_BASE_URL']?.trim();
-  if (!baseUrl) return null;
+  if (!baseUrl) return false;
 
-  let hostname: string;
   try {
-    hostname = new URL(baseUrl).hostname;
+    return !isAnthropicHost(new URL(baseUrl).hostname);
   } catch {
-    return 'ANTHROPIC_BASE_URL=<unparseable>';
+    return true;
   }
-  return isAnthropicHost(hostname) ? null : `ANTHROPIC_BASE_URL=${hostname}`;
-}
-
-export function isGatewayMode(env: NodeJS.ProcessEnv): boolean {
-  return detectGateway(env) !== null;
 }
