@@ -152,7 +152,7 @@ export async function runInit(args: string[], deps: InitDeps = {}): Promise<numb
     const arg = args[i]!;
     // Older instructions still pass --plan; the layout is now detected.
     if (arg === '--plan' || arg.startsWith('--plan=')) {
-      if (arg === '--plan') i++;
+      if (arg === '--plan' && args[i + 1]?.startsWith('--') === false) i++;
       process.stderr.write('init: --plan is no longer needed and is ignored\n');
     } else if (arg.startsWith('--credentials-path=')) {
       credentialsPathFlag = arg.slice('--credentials-path='.length);

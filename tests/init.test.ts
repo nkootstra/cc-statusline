@@ -193,6 +193,16 @@ describe('legacy --plan flag', () => {
   });
 });
 
+describe('legacy --plan flag without a value', () => {
+  it('does not swallow the flag that follows it', async () => {
+    const tmpDir = makeTmpDir();
+    const { code, output } = await captureStderr(() => runInit(['--plan', '--bogus'], baseDeps(tmpDir)));
+
+    expect(code).toBe(1);
+    expect(output).toContain('init: unknown flag "--bogus"');
+  });
+});
+
 describe('credential detection', () => {
   it('writes the cache and installs render without any prompt when credentials validate', async () => {
     const tmpDir = makeTmpDir();
