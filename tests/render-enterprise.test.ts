@@ -86,7 +86,7 @@ describe('golden Enterprise output', () => {
 
     const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
 
-    expect(output).toBe('Opus 4.7 · credits $780.00 / $1000.00 (78%) · Fable 12% [Tue 16:22]\n');
+    expect(output).toBe('Opus 4.7\ncredits $780.00 / $1000.00 (78%) · Fable 12% [Tue 16:22]\n');
   });
 
   it('renders exact fallback bucket line', async () => {
@@ -109,7 +109,7 @@ describe('golden Enterprise output', () => {
 
     const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
 
-    expect(output).toBe('Opus 4.7 · 5h 42% [17:22] · 7d 81% [Tue 16:22] · Fable 12%\n');
+    expect(output).toBe('Opus 4.7\n5h 42% [17:22] · 7d 81% [Tue 16:22] · Fable 12%\n');
   });
 
   // Observed live: the server puts the 7d reset one second before the minute
@@ -134,7 +134,7 @@ describe('golden Enterprise output', () => {
 
     const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
 
-    expect(output).toBe('Opus 4.7 · 5h 42% [17:22] · 7d 81% [Tue 16:22] · Fable 12%\n');
+    expect(output).toBe('Opus 4.7\n5h 42% [17:22] · 7d 81% [Tue 16:22] · Fable 12%\n');
   });
 
   it('keeps the per-model reset when it differs from the 7d reset', async () => {
@@ -157,13 +157,13 @@ describe('golden Enterprise output', () => {
 
     const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
 
-    expect(output).toBe('Opus 4.7 · 5h 42% [17:22] · 7d 81% [Tue 16:22] · Fable 12% [Wed 16:22]\n');
+    expect(output).toBe('Opus 4.7\n5h 42% [17:22] · 7d 81% [Tue 16:22] · Fable 12% [Wed 16:22]\n');
   });
 
   it('renders exact missing-cache repair line', async () => {
     const { output, spawnCalls } = await runWithCache(null, GOLDEN_STDIN);
 
-    expect(output).toBe('Opus 4.7 · usage — · run init\n');
+    expect(output).toBe('Opus 4.7\nusage — · run init\n');
     expect(spawnCalls).toHaveLength(0);
   });
 });
@@ -1002,7 +1002,7 @@ describe('Scenario 23: model-scoped weekly windows from usage.limits', () => {
 
     const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
 
-    expect(output).toBe('Opus 4.7 · credits $780.00 / $1000.00 (78%)\n');
+    expect(output).toBe('Opus 4.7\ncredits $780.00 / $1000.00 (78%)\n');
   });
 
   it('renders only model-scoped weekly rows, in server order', async () => {
@@ -1025,7 +1025,7 @@ describe('Scenario 23: model-scoped weekly windows from usage.limits', () => {
 
     const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
 
-    expect(output).toBe('Opus 4.7 · 5h — · 7d — · Fable 12% [Tue 16:22] · Opus 40%\n');
+    expect(output).toBe('Opus 4.7\n5h — · 7d — · Fable 12% [Tue 16:22] · Opus 40%\n');
   });
 
   it('skips rows without a percent figure', async () => {
@@ -1037,7 +1037,7 @@ describe('Scenario 23: model-scoped weekly windows from usage.limits', () => {
 
     const { output } = await runWithCache(cache, GOLDEN_STDIN, { now: () => NOW });
 
-    expect(output).toBe('Opus 4.7 · credits $780.00 / $1000.00 (78%)\n');
+    expect(output).toBe('Opus 4.7\ncredits $780.00 / $1000.00 (78%)\n');
   });
 
   it('dims model-scoped windows with the cached figures and keeps session cost outside', async () => {
@@ -1050,7 +1050,7 @@ describe('Scenario 23: model-scoped weekly windows from usage.limits', () => {
     const { output } = await runWithCache(cache, makeStdinWithCost(16), { now: () => NOW });
 
     expect(output).toBe(
-      'Sonnet 4.6 · credits $780.00 / $1000.00 (78%) · Fable 12% [Tue 16:22] ~ · session $16.00\n',
+      'Sonnet 4.6\ncredits $780.00 / $1000.00 (78%) · Fable 12% [Tue 16:22] ~ · session $16.00\n',
     );
   });
 
@@ -1088,6 +1088,31 @@ describe('gateway mode', () => {
       env: { ANTHROPIC_BASE_URL: 'https://gateway.example.com' },
     });
     expect(output).toBe('Opus 4.7\n');
+    expect(spawnCalls).toHaveLength(0);
+  });
+});
+
+describe('prompt cache segment', () => {
+  const stdinWithCache = JSON.stringify({
+    ...JSON.parse(GOLDEN_STDIN),
+    context_window: { used_percentage: 40 },
+    prompt_cache: { hit_ratio: 0.874, warm: true, caching_observed: true },
+  });
+
+  beforeEach(() => {
+    vi.stubEnv('NO_COLOR', '1');
+  });
+
+  it('follows ctx on the first row, with usage on the second', async () => {
+    const { output } = await runWithCache(null, stdinWithCache);
+    expect(output).toBe(`Opus 4.7 · ctx 40% · cache 87%\nusage ${MISSING} · ${MISSING_CACHE_HINT}\n`);
+  });
+
+  it('is shown behind an LLM gateway', async () => {
+    const { output, spawnCalls } = await runWithCache(null, stdinWithCache, {
+      env: { CLAUDE_CODE_USE_BEDROCK: '1' },
+    });
+    expect(output).toBe('Opus 4.7 · ctx 40% · cache 87%\n');
     expect(spawnCalls).toHaveLength(0);
   });
 });

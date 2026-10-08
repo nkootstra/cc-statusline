@@ -140,25 +140,6 @@ export function percentBar(percent: number, width: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Layout selection
-// ---------------------------------------------------------------------------
-
-export type Layout = 'wide' | 'narrow';
-
-/**
- * Choose a rendering layout based on the available terminal column count.
- *
- * Breakpoint: ≤ 100 columns → narrow; > 100 columns → wide.
- * `undefined` (unknown width, e.g. non-TTY or piped) → wide (safe default
- * since the consumer won't actually render in a narrow terminal when width is
- * unknown).
- */
-export function chooseLayout(stdoutColumns: number | undefined): Layout {
-  if (stdoutColumns === undefined) return 'wide';
-  return stdoutColumns <= 100 ? 'narrow' : 'wide';
-}
-
-// ---------------------------------------------------------------------------
 // Reset hint formatter
 // ---------------------------------------------------------------------------
 

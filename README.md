@@ -59,32 +59,37 @@ Older caches are intentionally ignored. Until init creates a v4 cache, the statu
 
 The Max and Enterprise renderer also enforces a cooldown after API `429` responses. The usage endpoint's limit is shared by every client signed in to the same account, including Claude Code itself and tools such as CodexBar, so a 429 usually means another client used the quota. If the server sends a `Retry-After` delay, cc-statusline waits that long; without one it waits five minutes, the same default CodexBar uses. Each further consecutive 429 doubles the wait, bounded to fifteen minutes. A single 429 only leaves the ` ~` marker on the last known figures; the ` rate-limited; retry in …` hint appears once two refreshes in a row have been rejected.
 
+The statusline uses two lines: the model, context usage, and prompt cache hit ratio on the first, and usage figures on the second. Every plan shows the session's prompt cache hit ratio after the context figure, for example `cache 87%`. It is the share of all input tokens this session that were read from cache, as reported by Claude Code (2.1.251 or later) on the statusline payload. Green means at least 80%, yellow at least 50%, red below that. The segment is dimmed once the cached prefix has outlived its TTL, and it is omitted until the session's first API response or when no response has reported cache tokens.
+
 Max and Enterprise use the same renderer and the same Claude Code login. They are separate installer choices only because Claude users know their subscription by those names.
 
 Example Pro output:
 
 ```text
-Opus 4.7 · 5h 102% · 7d 81% [Tue 20:00]
+Opus 4.7 · ctx 42% · cache 87%
+5h 102% · 7d 81% [Tue 20:00]
 ```
 
 Example Max output:
 
 ```text
-Opus 4.7 · 5h 102% · 7d 81% [Tue 20:00] · Fable 12%
+Opus 4.7 · ctx 42% · cache 87%
+5h 102% · 7d 81% [Tue 20:00] · Fable 12%
 ```
 
 Example Enterprise output with monthly credits:
 
 ```text
-Opus 4.7 · credits $780.00 / $1000.00 (78%) · Fable 12% [Tue 20:00] · session $0.08
+Opus 4.7 · ctx 42% · cache 87%
+credits $780.00 / $1000.00 (78%) · Fable 12% [Tue 20:00] · session $0.08
 ```
 
 ### LLM gateways
 
-When Claude Code is routed through a different LLM gateway or provider, subscription usage does not apply, so every plan shows only the model and context usage and the Max / Enterprise renderer skips the background usage refresh. Gateway mode is on when `ANTHROPIC_BASE_URL` points at a host outside `anthropic.com`, or when `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, or `CLAUDE_CODE_USE_FOUNDRY` is set to `1`, `true`, `yes`, or `on`. The statusline inherits Claude Code's environment, including the `env` block in `settings.json`.
+When Claude Code is routed through a different LLM gateway or provider, subscription usage does not apply, so every plan shows only the model, context usage, and prompt cache hit ratio, and the Max / Enterprise renderer skips the background usage refresh. Gateway mode is on when `ANTHROPIC_BASE_URL` points at a host outside `anthropic.com`, or when `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, or `CLAUDE_CODE_USE_FOUNDRY` is set to `1`, `true`, `yes`, or `on`. The statusline inherits Claude Code's environment, including the `env` block in `settings.json`.
 
 ```text
-Opus 4.7 · ctx 42%
+Opus 4.7 · ctx 42% · cache 87%
 ```
 
 ## Check version

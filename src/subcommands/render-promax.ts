@@ -6,10 +6,10 @@ import {
   applyColor,
   formatResetHint,
   formatOptionalHint,
-  chooseLayout,
 } from '../statusline/format';
 import { buildModelScopedSegments } from '../statusline/model-scoped';
 import { isGatewayMode } from '../statusline/gateway';
+import { buildCacheSegment } from '../statusline/prompt-cache';
 
 export interface RenderPromaxDeps {
   env?: NodeJS.ProcessEnv;
@@ -61,8 +61,9 @@ function renderLine(input: ReturnType<typeof parseStdin>, gatewayMode: boolean):
 
   const modelSeg = buildModelSegment(input.model.display_name);
   const ctxSeg = buildCtxSegment(input.context_window?.used_percentage);
+  const cacheSeg = buildCacheSegment(input.prompt_cache);
   if (gatewayMode) {
-    return [modelSeg, ctxSeg].filter(Boolean).join(SEP) + '\n';
+    return [modelSeg, ctxSeg, cacheSeg].filter(Boolean).join(SEP) + '\n';
   }
 
   const fiveHour = input.rate_limits?.five_hour;
@@ -79,18 +80,7 @@ function renderLine(input: ReturnType<typeof parseStdin>, gatewayMode: boolean):
   });
   const costSeg = buildCostSegment(input.cost.total_cost_usd);
 
-  const layout = chooseLayout(process.stdout.columns);
-
-  if (layout === 'wide') {
-    return [modelSeg, ctxSeg, fiveHourSeg, sevenDaySeg, ...modelScopedSegs, costSeg]
-      .filter(Boolean)
-      .join(SEP) + '\n';
-  }
-
-  // Narrow layout: split into two lines.
-  // Row 1: model · ctx
-  // Row 2: 5h · 7d · <model-scoped windows> · $cost
-  const row1 = [modelSeg, ctxSeg].filter(Boolean).join(SEP);
+  const row1 = [modelSeg, ctxSeg, cacheSeg].filter(Boolean).join(SEP);
   const row2 = [fiveHourSeg, sevenDaySeg, ...modelScopedSegs, costSeg].filter(Boolean).join(SEP);
   return row1 + '\n' + row2 + '\n';
 }
