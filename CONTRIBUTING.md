@@ -20,6 +20,7 @@ src/
   cache/          access-token + usage cache (schema v4, 0600 mode)
   credentials/    OAuth credential discovery and source rereading
   oauth/          usage API client
+  diagnostics/    bounded, token-free JSONL debug log
   settings/       ~/.claude/settings.json mutator
   statusline/     stdin reader, formatting, and the identity, subscription, and cached-usage rows
   subcommands/    init, uninstall, refresh, doctor, render (plus its background-refresh launcher)
@@ -48,7 +49,7 @@ TypeScript strict mode is enforced by `tsconfig.json`. Beyond that:
 
 ## Platform support
 
-macOS and Linux are the primary targets. Windows code paths exist (`win32` branches in `init` and `buildCommand`) but are not covered by CI. Windows patches are welcome; they may not be merged without a test signal.
+macOS and Linux are the primary targets. CI also runs on Windows (Node 22 and 24); timing-sensitive tests use a relaxed 250 ms budget there.
 
 ## Release process
 
