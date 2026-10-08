@@ -331,7 +331,7 @@ describe('readability: compact statusline', () => {
       runRenderPromax([], makeStream(readableInput)),
     );
 
-    expect(output).toBe('Sonnet 4.6 · 5h 0% [21:00] · 7d 81% [Tue 20:00]\n');
+    expect(output).toBe('Sonnet 4.6\n5h 0% [21:00] · 7d 81% [Tue 20:00]\n');
   });
 
   it('emits ANSI colors by default and strips them with NO_COLOR', async () => {
@@ -347,7 +347,7 @@ describe('readability: compact statusline', () => {
 
     expect(colored.output).toContain('\x1b[32m0%\x1b[0m');
     expect(colored.output).toContain('\x1b[33m81%\x1b[0m');
-    expect(plain.output).toBe('Sonnet 4.6 · 5h 0% [21:00] · 7d 81% [Tue 20:00]\n');
+    expect(plain.output).toBe('Sonnet 4.6\n5h 0% [21:00] · 7d 81% [Tue 20:00]\n');
   });
 });
 
@@ -523,7 +523,7 @@ describe('Scenario 10: no fetch, no file I/O', () => {
 
 describe('Scenario 11: model-scoped weekly windows', () => {
   const RESET = new Date(2026, 4, 5, 20, 0, 0);
-  const BASE_LINE = 'Sonnet 4.6 · 5h 0% [21:00] · 7d 81% [Tue 20:00]';
+  const BASE_LINE = 'Sonnet 4.6\n5h 0% [21:00] · 7d 81% [Tue 20:00]';
 
   function makeInput(modelScoped?: unknown, totalCostUsd = 0): string {
     return JSON.stringify({
@@ -629,7 +629,7 @@ describe('Scenario 11: model-scoped weekly windows', () => {
       runRenderPromax([], makeStream(JSON.stringify(input))),
     );
 
-    expect(output).toBe('Sonnet 4.6 · 5h 0% [21:00] · 7d 81% · Fable 12% [Tue 20:00]\n');
+    expect(output).toBe('Sonnet 4.6\n5h 0% [21:00] · 7d 81% · Fable 12% [Tue 20:00]\n');
   });
 
   it('omits windows without a utilization figure', async () => {
@@ -709,5 +709,52 @@ describe('gateway mode', () => {
       }),
     );
     expect(output).toContain('5h');
+  });
+});
+
+describe('prompt cache segment', () => {
+  const stdinWithCache = JSON.stringify({
+    ...JSON.parse(loadFixture('stdin-promax.json')),
+    prompt_cache: { hit_ratio: 0.874, warm: true, caching_observed: true },
+  });
+
+  beforeEach(() => {
+    vi.stubEnv('NO_COLOR', '1');
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process.stdout, 'columns', {
+      value: undefined,
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  it('follows ctx on the first row, with usage on the second, however wide the terminal', async () => {
+    Object.defineProperty(process.stdout, 'columns', {
+      value: 200,
+      writable: true,
+      configurable: true,
+    });
+    const { output } = await captureStdout(() => runRenderPromax([], makeStream(stdinWithCache)));
+    const [row1, row2] = output.split('\n');
+    expect(row1).toBe('claude-sonnet-4-5 · ctx 22% · cache 87%');
+    expect(row2).toMatch(/^5h 45%/);
+  });
+
+  it('is shown behind an LLM gateway', async () => {
+    const { output } = await captureStdout(() =>
+      runRenderPromax([], makeStream(stdinWithCache), {
+        env: { ANTHROPIC_BASE_URL: 'https://gateway.example.com' },
+      }),
+    );
+    expect(output).toBe('claude-sonnet-4-5 · ctx 22% · cache 87%\n');
+  });
+
+  it('is omitted when Claude Code sends no prompt cache stats', async () => {
+    const { output } = await captureStdout(() =>
+      runRenderPromax([], makeStream(loadFixture('stdin-promax.json'))),
+    );
+    expect(output).not.toContain('cache');
   });
 });

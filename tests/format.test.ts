@@ -5,7 +5,6 @@ import {
   applyDim,
   applyItalic,
   percentBar,
-  chooseLayout,
   formatResetHint,
   formatOptionalHint,
   SEP,
@@ -210,20 +209,6 @@ describe('percentBar', () => {
     const filled = [...bar].filter((c) => c !== ' ').length;
     expect(filled).toBeGreaterThanOrEqual(4);
     expect(filled).toBeLessThanOrEqual(6);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// chooseLayout
-// ---------------------------------------------------------------------------
-
-describe('chooseLayout', () => {
-  it('80 → narrow', () => expect(chooseLayout(80)).toBe('narrow'));
-  it('100 → narrow (boundary inclusive)', () => expect(chooseLayout(100)).toBe('narrow'));
-  it('101 → wide', () => expect(chooseLayout(101)).toBe('wide'));
-  it('120 → wide', () => expect(chooseLayout(120)).toBe('wide'));
-  it('undefined → wide (unknown terminal width defaults to wide)', () => {
-    expect(chooseLayout(undefined)).toBe('wide');
   });
 });
 

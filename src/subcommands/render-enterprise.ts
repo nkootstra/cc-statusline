@@ -10,7 +10,6 @@ import {
   colorTier,
   formatResetHint,
   formatOptionalHint,
-  chooseLayout,
 } from '../statusline/format';
 import {
   readCache,
@@ -22,6 +21,7 @@ import type { ExtraUsage, UsageBucket, UsageResponse } from '../oauth/types';
 import { modelScopedWindows } from '../oauth/usage';
 import { buildModelScopedSegments } from '../statusline/model-scoped';
 import { isGatewayMode } from '../statusline/gateway';
+import { buildCacheSegment } from '../statusline/prompt-cache';
 import {
   decideEnterpriseRefresh,
   rateLimitCooldownRemainingMs,
@@ -355,6 +355,7 @@ function renderLine(
 
   const modelSeg = buildModelSegment(input.model.display_name);
   const ctxSeg = buildCtxSegment(input.context_window?.used_percentage);
+  const cacheSeg = buildCacheSegment(input.prompt_cache);
 
   // Build usage segment, folding live session cost into the enterprise spend figure.
   const { text: rawUsage, isFetching } = buildUsageSegment(cache, isStale, nowMs, input.cost.total_cost_usd);
@@ -395,16 +396,8 @@ function renderLine(
 
   const usageWithHint = authHint ? usageSeg + authHint : usageSeg;
 
-  const layout = chooseLayout(process.stdout.columns);
-
-  if (layout === 'wide') {
-    return [modelSeg, ctxSeg, usageWithHint].filter(Boolean).join(SEP) + '\n';
-  }
-
-  // Narrow: two lines.
-  const row1 = [modelSeg, ctxSeg].filter(Boolean).join(SEP);
-  const row2 = usageWithHint;
-  return row1 + '\n' + row2 + '\n';
+  const row1 = [modelSeg, ctxSeg, cacheSeg].filter(Boolean).join(SEP);
+  return row1 + '\n' + usageWithHint + '\n';
 }
 
 // ---------------------------------------------------------------------------
@@ -455,7 +448,8 @@ export async function runRenderEnterprise(
   if (isGatewayMode(deps.env ?? process.env)) {
     const modelSeg = buildModelSegment(input.model.display_name);
     const ctxSeg = buildCtxSegment(input.context_window?.used_percentage);
-    process.stdout.write([modelSeg, ctxSeg].filter(Boolean).join(SEP) + '\n');
+    const cacheSeg = buildCacheSegment(input.prompt_cache);
+    process.stdout.write([modelSeg, ctxSeg, cacheSeg].filter(Boolean).join(SEP) + '\n');
     return 0;
   }
 

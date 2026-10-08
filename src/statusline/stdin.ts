@@ -8,8 +8,9 @@
  */
 
 import { sanitizeDisplayName, type ModelScopedWindow } from './model-scoped';
+import type { PromptCache } from './prompt-cache';
 
-export type { ModelScopedWindow };
+export type { ModelScopedWindow, PromptCache };
 
 export interface Model {
   id: string;
@@ -80,6 +81,8 @@ export interface StatuslineInput {
   context_window?: ContextWindow;
   /** Present only when Claude Code has rate-limit data for this session. */
   rate_limits?: RateLimits;
+  /** Absent before Claude Code 2.1.251 and until the session's first API response. */
+  prompt_cache?: PromptCache;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +196,21 @@ function normalizeContextWindow(raw: unknown): ContextWindow | undefined {
   return { used_percentage };
 }
 
+function normalizePromptCache(raw: unknown): PromptCache | undefined {
+  if (!isRecord(raw)) return undefined;
+  const ratio = raw['hit_ratio'];
+  const warm = raw['warm'];
+  const observed = raw['caching_observed'];
+  return {
+    hit_ratio:
+      typeof ratio === 'number' && Number.isFinite(ratio) && ratio >= 0 && ratio <= 1
+        ? ratio
+        : null,
+    ...(typeof warm === 'boolean' ? { warm } : {}),
+    ...(typeof observed === 'boolean' ? { caching_observed: observed } : {}),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -219,6 +237,7 @@ export function parseStdin(input: string): StatuslineInput | null {
 
   if (!isRecord(raw)) return null;
 
+  const promptCache = normalizePromptCache(raw['prompt_cache']);
   return {
     session_id: str(raw['session_id'], ''),
     transcript_path: str(raw['transcript_path'], ''),
@@ -231,6 +250,7 @@ export function parseStdin(input: string): StatuslineInput | null {
     exceeds_200k_tokens: bool(raw['exceeds_200k_tokens'], false),
     context_window: normalizeContextWindow(raw['context_window']),
     rate_limits: normalizeRateLimits(raw['rate_limits']),
+    ...(promptCache === undefined ? {} : { prompt_cache: promptCache }),
   };
 }
 

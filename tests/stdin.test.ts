@@ -278,3 +278,39 @@ describe('parseStdin — rate_limits.model_scoped', () => {
     ])).toEqual([{ display_name: 'Fable', utilization: 12, resets_at: null }]);
   });
 });
+
+describe('parseStdin — prompt_cache', () => {
+  function parseWith(promptCache: unknown): StatuslineInput | null {
+    const base = JSON.parse(loadFixture('stdin-promax.json')) as Record<string, unknown>;
+    return parseStdin(JSON.stringify({ ...base, prompt_cache: promptCache }));
+  }
+
+  it('is undefined when Claude Code does not send it', () => {
+    expect(parseStdin(loadFixture('stdin-promax.json'))?.prompt_cache).toBeUndefined();
+  });
+
+  it('reads hit_ratio, warm and caching_observed', () => {
+    expect(parseWith({ hit_ratio: 0.87, warm: true, caching_observed: true, misses: 2 })?.prompt_cache)
+      .toEqual({ hit_ratio: 0.87, warm: true, caching_observed: true });
+  });
+
+  it('reads a null hit_ratio as null', () => {
+    expect(parseWith({ hit_ratio: null, warm: false, caching_observed: false })?.prompt_cache)
+      .toEqual({ hit_ratio: null, warm: false, caching_observed: false });
+  });
+
+  it('treats an out-of-range or non-numeric hit_ratio as null', () => {
+    expect(parseWith({ hit_ratio: 1.5 })?.prompt_cache?.hit_ratio).toBeNull();
+    expect(parseWith({ hit_ratio: -0.1 })?.prompt_cache?.hit_ratio).toBeNull();
+    expect(parseWith({ hit_ratio: '0.5' })?.prompt_cache?.hit_ratio).toBeNull();
+  });
+
+  it('leaves non-boolean flags out', () => {
+    expect(parseWith({ hit_ratio: 0.5, warm: 'yes' })?.prompt_cache).toEqual({ hit_ratio: 0.5 });
+  });
+
+  it('ignores a non-object prompt_cache', () => {
+    expect(parseWith('warm')?.prompt_cache).toBeUndefined();
+    expect(parseWith(null)?.prompt_cache).toBeUndefined();
+  });
+});
