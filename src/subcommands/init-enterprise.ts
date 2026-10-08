@@ -36,8 +36,10 @@ export type SpawnClaude = (
 
 export type UsageApiPlan = 'max' | 'enterprise';
 
+// 'auto' is init without --plan: the usage API is optional there, so missing
+// or rejected credentials install a payload-only line instead of failing.
 export interface EnterprisePreparationOptions {
-  plan: UsageApiPlan;
+  plan: UsageApiPlan | 'auto';
   cachePath: string;
   credentialsPath?: string;
   force: boolean;
@@ -47,6 +49,7 @@ export interface EnterprisePreparationOptions {
   discoverFn: typeof discover;
   discoverOptions: Parameters<typeof discover>[0];
   spawnClaude: SpawnClaude;
+  stdinReader: () => Promise<string>;
   now: () => number;
   fetchImpl?: typeof fetch;
 }
@@ -219,6 +222,38 @@ function describeDiscoveryFailure(error: unknown): string | null {
   return null;
 }
 
+export const OPTIONAL_AUTH_HINT =
+  'Per-model windows and Enterprise credits need Claude Code credentials: ' +
+  'run `claude auth login`, then `npx @nkootstra/cc-statusline --force`.\n';
+
+type AutoLoginChoice = 'login' | 'skip' | 'interrupted';
+
+async function offerLogin(
+  options: EnterprisePreparationOptions,
+): Promise<AutoLoginChoice> {
+  if (!options.canInteract) {
+    process.stdout.write(OPTIONAL_AUTH_HINT);
+    return 'skip';
+  }
+
+  process.stdout.write(
+    'No usable Claude Code credentials found. 5h/7d still show without them.\n' +
+    'Sign in now to add per-model windows or Enterprise credits? (y/N) ',
+  );
+  const answer = await options.stdinReader();
+  if (answer === '\u0003' || answer === '\u0004') {
+    process.stdout.write('\n');
+    return 'interrupted';
+  }
+  const accepted = answer.toLowerCase() === 'y';
+  process.stdout.write(accepted ? 'y\n' : 'n\n');
+  if (!accepted) {
+    process.stdout.write(OPTIONAL_AUTH_HINT);
+    return 'skip';
+  }
+  return 'login';
+}
+
 function printManualAuthInstructions(plan: UsageApiPlan): void {
   process.stderr.write(
     'init: Claude Code authentication is required. Run:\n' +
@@ -231,8 +266,10 @@ async function recoverAutomaticCredentials(
   options: EnterprisePreparationOptions,
 ): Promise<
   | { kind: 'success'; credentials: OAuthCredentials; usage: UsageResponse }
+  | { kind: 'skip' }
   | { kind: 'exit'; code: number }
 > {
+  const optional = options.plan === 'auto';
   let credentials: OAuthCredentials | null = null;
   try {
     credentials = await options.discoverFn(options.discoverOptions);
@@ -244,6 +281,10 @@ async function recoverAutomaticCredentials(
           ? 'init: could not read Claude Code credentials.\n'
           : `init: could not read Claude Code credentials: ${reason}.\n`,
       );
+      if (optional) {
+        process.stdout.write(OPTIONAL_AUTH_HINT);
+        return { kind: 'skip' };
+      }
       return { kind: 'exit', code: 3 };
     }
   }
@@ -259,11 +300,15 @@ async function recoverAutomaticCredentials(
     }
     if (validation.kind === 'network-failure') {
       printNetworkFailure(validation, credentials);
-      return { kind: 'exit', code: 4 };
+      return optional ? { kind: 'skip' } : { kind: 'exit', code: 4 };
     }
   }
 
-  if (!options.canInteract) {
+  if (options.plan === 'auto') {
+    const choice = await offerLogin(options);
+    if (choice === 'skip') return { kind: 'skip' };
+    if (choice === 'interrupted') return { kind: 'exit', code: 130 };
+  } else if (!options.canInteract) {
     printManualAuthInstructions(options.plan);
     return { kind: 'exit', code: 2 };
   }
@@ -418,6 +463,9 @@ export async function prepareEnterprise(
 
   const recovery = await recoverAutomaticCredentials(options);
   if (recovery.kind === 'exit') return recovery;
+  if (recovery.kind === 'skip') {
+    return { kind: 'ready', cache: null, reusedExistingCache: false };
+  }
 
   return {
     kind: 'ready',

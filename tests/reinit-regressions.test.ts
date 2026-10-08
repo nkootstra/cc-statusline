@@ -135,6 +135,11 @@ describe('refresh: Retry-After is bounded', () => {
       cachePath,
       fetchImpl: vi.fn().mockResolvedValue(response(429, '', { 'Retry-After': '86400' })),
       now: () => NOW,
+      loadCredentialSourceImpl: sourceLoader({
+        accessToken: 'cached-access',
+        refreshToken: 'rt',
+        expiresAt: NOW + 3_600_000,
+      }),
     });
 
     const result = readCache(cachePath);

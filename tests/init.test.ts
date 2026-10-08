@@ -188,7 +188,8 @@ describe('plan selection and Pro installation', () => {
     expect(await runInit(args, deps)).toBe(0);
     expect(stdinReader).not.toHaveBeenCalled();
     expect(discoverImpl).not.toHaveBeenCalled();
-    expect(readSettings(settingsPath(tmpDir)).statusLine?.command).toContain('render-promax');
+    expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
+      .toBe(`${bundlePath(tmpDir)} render --payload-only`);
     expect(fs.existsSync(cachePath(tmpDir))).toBe(false);
   });
 
@@ -200,34 +201,153 @@ describe('plan selection and Pro installation', () => {
     expect(output).toContain('Pro statusline installed');
   });
 
-  it('selects Max from the interactive prompt and installs the usage-API renderer', async () => {
-    const tmpDir = makeTmpDir();
-    const stdinReader = vi.fn().mockResolvedValue('2');
+});
 
-    expect(await runInit([], baseDeps(tmpDir, { isInteractive: true, stdinReader }))).toBe(0);
-    expect(stdinReader).toHaveBeenCalledOnce();
-    expect(readSettings(settingsPath(tmpDir)).statusLine?.command).toContain('render-enterprise');
-  });
-
-  it('prompts for a plan only when interaction is available', async () => {
-    const tmpDir = makeTmpDir();
-    const stdinReader = vi.fn().mockResolvedValue('1');
-
-    expect(await runInit([], baseDeps(tmpDir, { isInteractive: true, stdinReader }))).toBe(0);
-    expect(stdinReader).toHaveBeenCalledOnce();
-  });
-
-  it('requires --plan in non-interactive mode without reading stdin', async () => {
+describe('plan auto-detection (no --plan)', () => {
+  it('writes the cache and installs render without any prompt when credentials validate', async () => {
     const tmpDir = makeTmpDir();
     const stdinReader = vi.fn();
+    const spawnClaude = vi.fn();
+    const fetchImpl = makeFetch();
+
+    expect(await runInit([], baseDeps(tmpDir, {
+      isInteractive: true,
+      stdinReader,
+      spawnClaude,
+      fetchImpl,
+    }))).toBe(0);
+
+    expect(stdinReader).not.toHaveBeenCalled();
+    expect(spawnClaude).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
+      .toBe(`${bundlePath(tmpDir)} render`);
+    expect(readCache(cachePath(tmpDir))).toMatchObject({
+      credentialSource: { kind: 'claude-code' },
+      credentials: { accessToken: MOCK_CREDENTIALS.accessToken },
+      usage: MOCK_USAGE,
+    });
+  });
+
+  it('installs without a cache and prints one hint when credentials are missing and non-interactive', async () => {
+    const tmpDir = makeTmpDir();
+    const spawnClaude = vi.fn();
+    const stdinReader = vi.fn();
+    const deps = baseDeps(tmpDir, {
+      discoverImpl: vi.fn().mockRejectedValue(
+        new CredentialNotFoundError(['/mock/credentials.json']),
+      ) as InitDeps['discoverImpl'],
+      spawnClaude,
+      stdinReader,
+    });
+
+    const { code, output } = await captureStdout(() => runInit([], deps));
+
+    expect(code).toBe(0);
+    expect(spawnClaude).not.toHaveBeenCalled();
+    expect(stdinReader).not.toHaveBeenCalled();
+    expect(fs.existsSync(cachePath(tmpDir))).toBe(false);
+    expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
+      .toBe(`${bundlePath(tmpDir)} render`);
+    expect(output.split('\n').filter((line) => line.includes('claude auth login'))).toHaveLength(1);
+  });
+
+  it('installs without a cache when the usage API rejects the discovered credentials', async () => {
+    const tmpDir = makeTmpDir();
+    const spawnClaude = vi.fn();
+
+    expect(await runInit(['--non-interactive'], baseDeps(tmpDir, {
+      isInteractive: true,
+      fetchImpl: makeFetch(401),
+      spawnClaude,
+    }))).toBe(0);
+
+    expect(spawnClaude).not.toHaveBeenCalled();
+    expect(fs.existsSync(cachePath(tmpDir))).toBe(false);
+    expect(fs.existsSync(bundlePath(tmpDir))).toBe(true);
+  });
+
+  it('installs without a cache when the usage API cannot be reached', async () => {
+    const tmpDir = makeTmpDir();
     const { code, output } = await captureStderr(() =>
-      runInit(['--non-interactive'], baseDeps(tmpDir, { isInteractive: true, stdinReader })),
+      runInit([], baseDeps(tmpDir, {
+        fetchImpl: makeThrowingFetch(`timed out for ${MOCK_CREDENTIALS.accessToken}`),
+      })),
     );
 
-    expect(code).toBe(1);
-    expect(output).toContain('--plan');
-    expect(stdinReader).not.toHaveBeenCalled();
-    expect(fs.existsSync(bundlePath(tmpDir))).toBe(false);
+    expect(code).toBe(0);
+    expect(output).not.toContain(MOCK_CREDENTIALS.accessToken);
+    expect(fs.existsSync(cachePath(tmpDir))).toBe(false);
+    expect(fs.existsSync(bundlePath(tmpDir))).toBe(true);
+  });
+
+  it.each([
+    ['declines', 'n'],
+    ['presses Enter', '\r'],
+  ])('does not start login when the interactive user %s', async (_label, key) => {
+    const tmpDir = makeTmpDir();
+    const spawnClaude = vi.fn();
+    const stdinReader = vi.fn().mockResolvedValue(key);
+
+    expect(await runInit([], baseDeps(tmpDir, {
+      isInteractive: true,
+      discoverImpl: vi.fn().mockRejectedValue(
+        new CredentialNotFoundError(['/mock/credentials.json']),
+      ) as InitDeps['discoverImpl'],
+      spawnClaude,
+      stdinReader,
+    }))).toBe(0);
+
+    expect(stdinReader).toHaveBeenCalledOnce();
+    expect(spawnClaude).not.toHaveBeenCalled();
+    expect(fs.existsSync(cachePath(tmpDir))).toBe(false);
+  });
+
+  it('starts login only after the interactive user accepts', async () => {
+    const tmpDir = makeTmpDir();
+    const { deps, spawnClaude } = authRecoveryDeps(
+      tmpDir,
+      { status: 0, signal: null, stdout: '{"loggedIn":false}' },
+    );
+    const stdinReader = vi.fn().mockResolvedValue('y');
+
+    expect(await runInit([], { ...deps, stdinReader })).toBe(0);
+
+    expect(stdinReader).toHaveBeenCalledOnce();
+    expect(spawnClaude.mock.calls.map((call) => call[1])).toEqual([
+      ['auth', 'status'],
+      ['auth', 'login'],
+    ]);
+    expect(readCache(cachePath(tmpDir))?.credentials.accessToken)
+      .toBe(MOCK_CREDENTIALS.accessToken);
+  });
+
+  it('rewrites a legacy render-enterprise command without a conflict prompt', async () => {
+    const tmpDir = makeTmpDir();
+    writeJson(settingsPath(tmpDir), {
+      statusLine: {
+        type: 'command',
+        command: `${bundlePath(tmpDir)} render-enterprise`,
+      },
+    });
+
+    expect(await runInit([], baseDeps(tmpDir))).toBe(0);
+    expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
+      .toBe(`${bundlePath(tmpDir)} render`);
+  });
+
+  it('rewrites a legacy render-promax command for --plan pro without a conflict prompt', async () => {
+    const tmpDir = makeTmpDir();
+    writeJson(settingsPath(tmpDir), {
+      statusLine: {
+        type: 'command',
+        command: `${bundlePath(tmpDir)} render-promax`,
+      },
+    });
+
+    expect(await runInit(['--plan=pro'], baseDeps(tmpDir))).toBe(0);
+    expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
+      .toBe(`${bundlePath(tmpDir)} render --payload-only`);
   });
 });
 
@@ -782,9 +902,7 @@ describe('settings, platform, and installer regressions', () => {
 
     expect(await runInit([], baseDeps(tmpDir, {
       isInteractive: true,
-      stdinReader: vi.fn()
-        .mockResolvedValueOnce('1')
-        .mockResolvedValueOnce('n'),
+      stdinReader: vi.fn().mockResolvedValueOnce('n'),
     }))).toBe(0);
     expect(fileHash(settingsPath(tmpDir))).toBe(before);
     expect(fs.existsSync(bundlePath(tmpDir))).toBe(false);
@@ -820,7 +938,8 @@ describe('settings, platform, and installer regressions', () => {
     expect(await runInit(['--plan=pro'], baseDeps(tmpDir))).toBe(2);
     expect(readSettings(settingsPath(tmpDir)).statusLine?.command).toBe('/other/statusline');
     expect(await runInit(['--plan=pro', '--force'], baseDeps(tmpDir))).toBe(0);
-    expect(readSettings(settingsPath(tmpDir)).statusLine?.command).toContain('render-promax');
+    expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
+      .toBe(`${bundlePath(tmpDir)} render --payload-only`);
   });
 
   it('emits an absolute node command on Windows', async () => {
@@ -831,14 +950,14 @@ describe('settings, platform, and installer regressions', () => {
     const windowsCommand = readSettings(settingsPath(windowsDir)).statusLine?.command;
     const windowsBundlePath = bundlePath(windowsDir);
     expect(path.isAbsolute(windowsBundlePath)).toBe(true);
-    expect(windowsCommand).toBe(`node ${windowsBundlePath} render-promax`);
+    expect(windowsCommand).toBe(`node ${windowsBundlePath} render --payload-only`);
   });
 
   it.runIf(process.platform !== 'win32')('makes POSIX bundles executable', async () => {
     const posixDir = makeTmpDir();
     expect(await runInit(['--plan=pro'], baseDeps(posixDir))).toBe(0);
     expect(readSettings(settingsPath(posixDir)).statusLine?.command)
-      .toBe(`${bundlePath(posixDir)} render-promax`);
+      .toBe(`${bundlePath(posixDir)} render --payload-only`);
     expect(fs.statSync(bundlePath(posixDir)).mode & 0o777).toBe(0o755);
   });
 
@@ -872,7 +991,7 @@ describe('settings, platform, and installer regressions', () => {
     expect(discoverImpl).toHaveBeenCalledOnce();
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
-      .toBe(`${bundlePath(tmpDir)} render-enterprise`);
+      .toBe(`${bundlePath(tmpDir)} render`);
     expect(readCache(cachePath(tmpDir))).toMatchObject({
       credentialSource: { kind: 'claude-code' },
     });

@@ -39,9 +39,17 @@ const PLAN_LABELS: Record<PlanTier, string> = {
   enterprise: 'Enterprise',
 };
 
-// Claude Code's statusline payload carries no per-model weekly windows, so a
-// plan that has them (Max) reads the usage API directly, as Enterprise does.
-function usageApiPlan(tier: PlanTier): UsageApiPlan | null {
+const RENDER_SUBCOMMANDS = [
+  'render',
+  'render --payload-only',
+  'render-promax',
+  'render-enterprise',
+] as const;
+
+// Claude Code's statusline payload carries no per-model weekly windows, so
+// every plan but an explicit Pro reads the usage API too, as Enterprise does.
+function usageApiPlan(tier: PlanTier | undefined): UsageApiPlan | 'auto' | null {
+  if (tier === undefined) return 'auto';
   return tier === 'pro' ? null : tier;
 }
 
@@ -78,16 +86,24 @@ function getBundleDestPath(homedirOverride?: string): string {
   return path.join(getInstallDir(homedirOverride), 'cc-statusline.js');
 }
 
-function buildCommand(
+function commandFor(
   installDir: string,
-  tier: PlanTier,
+  subcommand: string,
   platform: NodeJS.Platform,
 ): string {
   const bundlePath = path.join(installDir, 'cc-statusline.js');
-  const subcommand = usageApiPlan(tier) === null ? 'render-promax' : 'render-enterprise';
   return platform === 'win32'
     ? `node ${bundlePath} ${subcommand}`
     : `${bundlePath} ${subcommand}`;
+}
+
+function buildCommand(
+  installDir: string,
+  tier: PlanTier | undefined,
+  platform: NodeJS.Platform,
+): string {
+  const subcommand = usageApiPlan(tier) === null ? 'render --payload-only' : 'render';
+  return commandFor(installDir, subcommand, platform);
 }
 
 async function readSingleKeystroke(): Promise<string> {
@@ -109,52 +125,6 @@ async function readSingleKeystroke(): Promise<string> {
   });
 }
 
-async function choosePlan(
-  planFlag: PlanTier | undefined,
-  canInteract: boolean,
-  stdinReader: () => Promise<string>,
-): Promise<PlanTier | 1 | 130> {
-  if (planFlag !== undefined) return planFlag;
-
-  if (!canInteract) {
-    process.stderr.write(
-      'init: --plan is required in non-interactive mode; expected pro, max, or enterprise\n',
-    );
-    return 1;
-  }
-
-  process.stdout.write(
-    'Which Claude Code plan are you on?\n' +
-    '  [1] Pro\n' +
-    '  [2] Max (uses keychain credentials)\n' +
-    '  [3] Enterprise (uses keychain credentials)\n' +
-    '  Choice (1-3): ',
-  );
-
-  for (let attempts = 0; attempts < 10; attempts++) {
-    const key = await stdinReader();
-    if (key === '1') {
-      process.stdout.write('1\n');
-      return 'pro';
-    }
-    if (key === '2') {
-      process.stdout.write('2\n');
-      return 'max';
-    }
-    if (key === '3') {
-      process.stdout.write('3\n');
-      return 'enterprise';
-    }
-    if (key === '\u0003' || key === '\u0004') {
-      process.stdout.write('\n');
-      return 130;
-    }
-  }
-
-  process.stderr.write('init: invalid input; expected 1, 2, or 3\n');
-  return 1;
-}
-
 function replaceStatusLine(settings: SettingsFile, command: string): void {
   clearStatusLine(settings);
   setStatusLine(settings, command);
@@ -163,6 +133,7 @@ function replaceStatusLine(settings: SettingsFile, command: string): void {
 async function prepareSettings(
   settings: SettingsFile,
   command: string,
+  ownCommands: readonly string[],
   force: boolean,
   canInteract: boolean,
   stdinReader: () => Promise<string>,
@@ -174,7 +145,7 @@ async function prepareSettings(
   if (mutation.action !== 'conflict') {
     return { kind: 'ready', shouldWrite: true };
   }
-  if (force) {
+  if (force || ownCommands.includes(mutation.existing ?? '')) {
     replaceStatusLine(settings, command);
     return { kind: 'ready', shouldWrite: true };
   }
@@ -253,9 +224,7 @@ export async function runInit(args: string[], deps: InitDeps = {}): Promise<numb
       (process.stdin.isTTY === true && process.stdout.isTTY === true));
   const stdinReader = deps.stdinReader ?? readSingleKeystroke;
 
-  const tier = await choosePlan(planFlag, canInteract, stdinReader);
-  if (tier === 1 || tier === 130) return tier;
-
+  const tier = planFlag;
   const installDir = getInstallDir(deps.homedirOverride);
   const destinationPath = getBundleDestPath(deps.homedirOverride);
   const command = buildCommand(installDir, tier, platform);
@@ -263,6 +232,7 @@ export async function runInit(args: string[], deps: InitDeps = {}): Promise<numb
   const settingsPreparation = await prepareSettings(
     settings,
     command,
+    RENDER_SUBCOMMANDS.map((subcommand) => commandFor(installDir, subcommand, platform)),
     forceFlag,
     canInteract,
     stdinReader,
@@ -286,6 +256,7 @@ export async function runInit(args: string[], deps: InitDeps = {}): Promise<numb
           platformOverride: deps.platformOverride,
         },
         spawnClaude,
+        stdinReader,
         now,
         fetchImpl: deps.fetchImpl,
       });
@@ -321,12 +292,13 @@ export async function runInit(args: string[], deps: InitDeps = {}): Promise<numb
     return 0;
   }
 
+  const label = tier === undefined ? 'Usage-aware' : PLAN_LABELS[tier];
   if (enterprisePreparation?.reusedExistingCache === true) {
     process.stdout.write(
-      `${PLAN_LABELS[tier]} statusline is already installed with valid credentials.\n` +
+      `${label} statusline is already installed with valid credentials.\n` +
       'Re-run with --force to re-validate credentials.\n',
     );
   }
-  printEnterpriseSuccess(PLAN_LABELS[tier]);
+  printEnterpriseSuccess(label);
   return 0;
 }

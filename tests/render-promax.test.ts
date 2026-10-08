@@ -51,7 +51,7 @@ function captureStdout(fn: () => Promise<number>): Promise<{ output: string; exi
 
 // We import dynamically inside tests to allow proper module isolation.
 // Since vitest handles this cleanly, we just import at the top.
-import { runRenderPromax } from '../src/subcommands/render-promax';
+import { runRenderPromax } from '../src/subcommands/render';
 import { colorTier, MISSING } from '../src/statusline/format';
 
 // ---------------------------------------------------------------------------
