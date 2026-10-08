@@ -35,7 +35,7 @@ async function main(argv: string[]): Promise<number> {
 
   // Each subcommand is imported on demand so the render paths, which run on
   // every prompt, never evaluate the installer, refresher, or their deps.
-  if (cmd?.startsWith('--') && cmd !== '--help') {
+  if (cmd === undefined || (cmd.startsWith('--') && cmd !== '--help')) {
     const { runInit } = await import('./subcommands/init');
     return runInit(argv.slice(2));
   }
@@ -63,7 +63,6 @@ async function main(argv: string[]): Promise<number> {
       const { runDoctor } = await import('./subcommands/doctor');
       return runDoctor(argv.slice(3));
     }
-    case undefined:
     case '-h':
     case '--help':
       process.stdout.write(HELP);
