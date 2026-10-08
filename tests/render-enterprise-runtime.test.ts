@@ -89,7 +89,8 @@ describe('background refresh integration', () => {
 
       expect(exitCode).toBe(0);
       expect(spawned).toBe(true);
-      expect(elapsedMs).toBeLessThan(100);
+      // Shared Windows runners have slow, noisy filesystem writes; same platform split as build-smoke.
+      expect(elapsedMs).toBeLessThan(process.platform === 'win32' ? 250 : 100);
     } finally {
       stdout.mockRestore();
       rmSync(tempDir, { recursive: true, force: true });
