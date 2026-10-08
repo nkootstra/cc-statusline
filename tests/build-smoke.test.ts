@@ -36,11 +36,24 @@ describe('build smoke', () => {
     expect(existsSync(resolve(__dirname, '..', binary))).toBe(true);
   });
 
-  it('exits 0 with no args (prints help)', () => {
-    const result = spawnSync(process.execPath, [BUNDLE], { encoding: 'utf8' });
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain('cc-statusline');
-    expect(result.stdout).toContain('init');
+  it('runs init with no args', () => {
+    const home = mkdtempSync(resolve(tmpdir(), 'cc-statusline-bare-'));
+    const claudeDir = resolve(home, '.claude');
+    mkdirSync(claudeDir, { recursive: true });
+    // A foreign statusLine makes init stop at its settings conflict check,
+    // before credential discovery could reach the real keychain.
+    writeFileSync(
+      resolve(claudeDir, 'settings.json'),
+      JSON.stringify({ statusLine: { type: 'command', command: 'other-statusline' } }),
+    );
+
+    const result = spawnSync(process.execPath, [BUNDLE], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: claudeDir },
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('already has a different statusLine.command');
   });
 
   it('exits 0 on --help', () => {
