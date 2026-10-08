@@ -22,7 +22,7 @@ src/
   oauth/          usage API client
   settings/       ~/.claude/settings.json mutator
   statusline/     output formatter + stdin reader for Claude Code
-  subcommands/    init, uninstall, refresh, render-promax, render-enterprise
+  subcommands/    init, uninstall, refresh, render (render-promax and render-enterprise hold its row builders)
 tests/
   fixtures/       static test inputs
 ```

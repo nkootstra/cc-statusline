@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Readable } from 'node:stream';
-import { runRenderPromax } from '../src/subcommands/render-promax';
-import { runRenderEnterprise } from '../src/subcommands/render-enterprise';
+import { runRender, runRenderEnterprise, runRenderPromax } from '../src/subcommands/render';
 import { captureStdout } from './support/render-enterprise';
 
 function neverEndingStream(): Readable {
@@ -31,6 +30,18 @@ describe('stdin that never closes', () => {
     const stream = neverEndingStream();
     const pending = captureStdout(() =>
       runRenderEnterprise([], stream, { cachePath: '/nonexistent/cache.json', spawnRefresh: () => {} }),
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    const { output } = await pending;
+
+    expect(output).toBe('\n');
+    expect(stream.destroyed).toBe(true);
+  });
+
+  it('render prints a blank line and releases the stream', async () => {
+    const stream = neverEndingStream();
+    const pending = captureStdout(() =>
+      runRender([], stream, { cachePath: '/nonexistent/cache.json', spawnRefresh: () => {} }),
     );
     await vi.advanceTimersByTimeAsync(1_000);
     const { output } = await pending;

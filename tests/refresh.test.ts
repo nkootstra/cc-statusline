@@ -70,6 +70,23 @@ function withSourceLoader(
   } as RefreshDeps;
 }
 
+function cachedSourceLoader(cachePath: string): SourceLoader {
+  return vi.fn<SourceLoader>(async () => {
+    const cache = readCache(cachePath);
+    if (cache === null) throw new Error('cache missing');
+    return { ...cache.credentials, refreshToken: 'source-refresh' };
+  });
+}
+
+function readLog(logPath: string): Array<Record<string, unknown>> {
+  if (!fs.existsSync(logPath)) return [];
+  return fs.readFileSync(logPath, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
 function spyOnStdout() {
   return vi.spyOn(process.stdout, 'write').mockReturnValue(true);
 }
@@ -99,10 +116,10 @@ describe('runRefresh', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('fetches usage once for a fresh usable cache without loading its source', async () => {
+  it('rereads the source once and fetches once when its token is unchanged', async () => {
     await writeCache(makeCache(now), cachePath);
     const fetchImpl = vi.fn().mockResolvedValue(response(200, USAGE));
-    const loadSource = vi.fn<SourceLoader>();
+    const loadSource = cachedSourceLoader(cachePath);
 
     expect(await runRefresh([], withSourceLoader({
       cachePath,
@@ -110,9 +127,126 @@ describe('runRefresh', () => {
       now: () => now,
     }, loadSource))).toBe(0);
 
+    expect(loadSource).toHaveBeenCalledOnce();
     expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(loadSource).not.toHaveBeenCalled();
+    expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({
+      Authorization: 'Bearer cached-access',
+    });
     expect(readCache(cachePath)?.usage).toEqual(USAGE);
+    expect(readCache(cachePath)?.credentials.accessToken).toBe('cached-access');
+  });
+
+  it('follows an account switch on the first refresh after /login', async () => {
+    const logPath = path.join(tmpDir, 'debug.log');
+    await writeCache(makeCache(now, { usage: USAGE }), cachePath);
+    const fetchImpl = vi.fn().mockResolvedValue(response(200, CONCURRENT_USAGE));
+
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      logPath,
+      fetchImpl,
+      now: () => now,
+    }, vi.fn<SourceLoader>().mockResolvedValue({
+      accessToken: 'switched-access',
+      refreshToken: 'switched-refresh',
+      expiresAt: now + 4 * 60 * 60_000,
+    })));
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({
+      Authorization: 'Bearer switched-access',
+    });
+    expect(readCache(cachePath)).toMatchObject({
+      credentials: {
+        accessToken: 'switched-access',
+        expiresAt: now + 4 * 60 * 60_000,
+      },
+      usage: CONCURRENT_USAGE,
+    });
+    const events = readLog(logPath);
+    expect(events).toContainEqual(expect.objectContaining({
+      event: 'credential-source.reload.decision',
+      action: 'reload',
+      reason: 'every-refresh',
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      event: 'credential-source.reload.result',
+      result: 'success',
+      accessTokenChanged: true,
+    }));
+    expect(fs.readFileSync(logPath, 'utf8')).not.toContain('switched-access');
+  });
+
+  it.each([
+    ['rate-limited', () => response(429)],
+    ['transient', () => response(500, 'boom for switched-access')],
+    ['cloudflare-blocked', () => response(403)],
+  ])('adopts a switched token and drops the old account usage when the fetch is %s', async (_kind, makeResponse) => {
+    await writeCache(makeCache(now, {
+      usage: USAGE,
+      lastUsageRefreshAt: now - 10 * 60_000,
+    }), cachePath);
+
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      fetchImpl: vi.fn().mockResolvedValue(makeResponse()),
+      now: () => now,
+    }, vi.fn<SourceLoader>().mockResolvedValue({
+      accessToken: 'switched-access',
+      refreshToken: 'switched-refresh',
+      expiresAt: now + 4 * 60 * 60_000,
+    })));
+
+    const result = readCache(cachePath);
+    expect(result?.usage).toBeNull();
+    expect(result?.credentials).toEqual({
+      accessToken: 'switched-access',
+      expiresAt: now + 4 * 60 * 60_000,
+    });
+    expect(result?.lastErrorMessage ?? '').not.toContain('switched-access');
+    expect(result?.lastErrorMessage ?? '').not.toContain('switched-refresh');
+  });
+
+  it('keeps usage on a failed fetch when the source token is unchanged', async () => {
+    await writeCache(makeCache(now, { usage: USAGE }), cachePath);
+
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      fetchImpl: vi.fn().mockResolvedValue(response(500, 'boom')),
+      now: () => now,
+    }, cachedSourceLoader(cachePath)));
+
+    const result = readCache(cachePath);
+    expect(result?.usage).toEqual(USAGE);
+    expect(result?.credentials.accessToken).toBe('cached-access');
+  });
+
+  it('falls back to a still-valid cached token when the reread fails', async () => {
+    const logPath = path.join(tmpDir, 'debug.log');
+    await writeCache(makeCache(now, {
+      credentials: { accessToken: 'cached-access', expiresAt: now + 60 * 60_000 },
+    }), cachePath);
+    const fetchImpl = vi.fn().mockResolvedValue(response(200, USAGE));
+
+    await runRefresh([], withSourceLoader({
+      cachePath,
+      logPath,
+      fetchImpl,
+      now: () => now,
+    }, vi.fn<SourceLoader>().mockRejectedValue(
+      new Error('keychain locked near cached-access'),
+    )));
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({
+      Authorization: 'Bearer cached-access',
+    });
+    expect(readCache(cachePath)).toMatchObject({
+      credentials: { accessToken: 'cached-access' },
+      usage: USAGE,
+      lastErrorMessage: null,
+    });
+    expect(fs.readFileSync(logPath, 'utf8')).not.toContain('cached-access');
   });
 
   it('honors a refresh claim inherited from the renderer', async () => {
@@ -121,11 +255,11 @@ describe('runRefresh', () => {
     }), cachePath);
     const fetchImpl = vi.fn().mockResolvedValue(response(200, USAGE));
 
-    expect(await runRefresh([`--claimed-at=${now}`], {
+    expect(await runRefresh([`--claimed-at=${now}`], withSourceLoader({
       cachePath,
       fetchImpl,
       now: () => now,
-    })).toBe(0);
+    }, cachedSourceLoader(cachePath)))).toBe(0);
 
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(readCache(cachePath)?.usage).toEqual(USAGE);
@@ -183,7 +317,7 @@ describe('runRefresh', () => {
     });
   });
 
-  it('adopts a near-expiry candidate only after its usage request succeeds', async () => {
+  it('adopts a near-expiry candidate after a failed request but never persists its secrets', async () => {
     const cached = makeCache(now, {
       credentials: { accessToken: 'old-access', expiresAt: now + 60_000 },
       usage: USAGE,
@@ -204,8 +338,11 @@ describe('runRefresh', () => {
     }, vi.fn<SourceLoader>().mockResolvedValue(candidate)));
 
     const result = readCache(cachePath);
-    expect(result?.credentials).toEqual(cached.credentials);
-    expect(result?.usage).toEqual(USAGE);
+    expect(result?.credentials).toEqual({
+      accessToken: 'candidate-access',
+      expiresAt: now + 60 * 60_000,
+    });
+    expect(result?.usage).toBeNull();
     expect(result?.lastErrorMessage).not.toContain('candidate-access');
     expect(result?.lastErrorMessage).not.toContain('candidate-refresh');
   });
@@ -252,7 +389,7 @@ describe('runRefresh', () => {
     expect(readCache(cachePath)?.authState).toBe('fatal');
   });
 
-  it('reloads after a usage 401 and retries once with a different source token', async () => {
+  it('reloads after a usage 401 on the fallback token and retries once with a different source token', async () => {
     await writeCache(makeCache(now), cachePath);
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(response(401))
@@ -262,11 +399,13 @@ describe('runRefresh', () => {
       cachePath,
       fetchImpl,
       now: () => now,
-    }, vi.fn<SourceLoader>().mockResolvedValue({
-      accessToken: 'recovered-access',
-      refreshToken: 'recovered-refresh',
-      expiresAt: now + 2 * 60 * 60_000,
-    })));
+    }, vi.fn<SourceLoader>()
+      .mockRejectedValueOnce(new Error('keychain busy'))
+      .mockResolvedValue({
+        accessToken: 'recovered-access',
+        refreshToken: 'recovered-refresh',
+        expiresAt: now + 2 * 60 * 60_000,
+      })));
 
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({
@@ -285,21 +424,23 @@ describe('runRefresh', () => {
     });
   });
 
-  it('does not retry more than once when the replacement token also gets 401', async () => {
+  it('does not retry when the reread replacement token gets 401', async () => {
     await writeCache(makeCache(now), cachePath);
     const fetchImpl = vi.fn().mockResolvedValue(response(401));
+    const loadSource = vi.fn<SourceLoader>().mockResolvedValue({
+      accessToken: 'replacement-access',
+      refreshToken: 'replacement-refresh',
+      expiresAt: now + 60 * 60_000,
+    });
 
     await runRefresh([], withSourceLoader({
       cachePath,
       fetchImpl,
       now: () => now,
-    }, vi.fn<SourceLoader>().mockResolvedValue({
-      accessToken: 'replacement-access',
-      refreshToken: 'replacement-refresh',
-      expiresAt: now + 60 * 60_000,
-    })));
+    }, loadSource));
 
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(loadSource).toHaveBeenCalledOnce();
+    expect(fetchImpl).toHaveBeenCalledOnce();
     const result = readCache(cachePath);
     expect(result?.authState).toBe('fatal');
     expect(result?.credentials.accessToken).toBe('cached-access');
@@ -441,11 +582,11 @@ describe('runRefresh', () => {
       return response(200, USAGE);
     });
 
-    await runRefresh([], {
+    await runRefresh([], withSourceLoader({
       cachePath,
       fetchImpl,
       now: () => now,
-    });
+    }, cachedSourceLoader(cachePath)));
 
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(readCache(cachePath)).toEqual(initSnapshot);
@@ -498,8 +639,6 @@ describe('runRefresh', () => {
     let callCount = 0;
     const fetchImpl: typeof fetch = async () => {
       callCount += 1;
-      if (callCount === 1) return response(401);
-
       const concurrent = readCache(cachePath)!;
       concurrent.credentials = {
         accessToken: 'concurrent-access',
@@ -520,7 +659,7 @@ describe('runRefresh', () => {
       now: () => now,
     }, vi.fn<SourceLoader>().mockResolvedValue(candidate)));
 
-    expect(callCount).toBe(2);
+    expect(callCount).toBe(1);
     expect(readCache(cachePath)).toEqual(concurrentSnapshot);
   });
 
@@ -634,6 +773,7 @@ describe('runRefresh', () => {
     await writeCache(makeCache(now), cachePath);
     await runRefresh([], {
       cachePath,
+      loadCredentialSourceImpl: cachedSourceLoader(cachePath),
       now: () => now,
       fetchImpl: vi.fn().mockResolvedValue(response(429, '', {
         'Retry-After': '120',
@@ -654,6 +794,7 @@ describe('runRefresh', () => {
     now += 121_000;
     await runRefresh([], {
       cachePath,
+      loadCredentialSourceImpl: cachedSourceLoader(cachePath),
       now: () => now,
       fetchImpl: vi.fn().mockResolvedValue(response(200, USAGE)),
     });
@@ -668,6 +809,7 @@ describe('runRefresh', () => {
     await writeCache(makeCache(now), cachePath);
     const limited = () => ({
       cachePath,
+      loadCredentialSourceImpl: cachedSourceLoader(cachePath),
       now: () => now,
       fetchImpl: vi.fn().mockResolvedValue(response(429)),
     });
@@ -712,6 +854,7 @@ describe('runRefresh', () => {
 
     await runRefresh([], {
       cachePath,
+      loadCredentialSourceImpl: cachedSourceLoader(cachePath),
       now: () => now,
       fetchImpl: vi.fn().mockResolvedValue(response(403)),
     });
@@ -736,6 +879,7 @@ describe('runRefresh', () => {
 
     await runRefresh([], {
       cachePath,
+      loadCredentialSourceImpl: cachedSourceLoader(cachePath),
       now: () => now,
       fetchImpl: vi.fn().mockRejectedValue(
         new Error('network failed for sensitive-access'),
@@ -751,6 +895,7 @@ describe('runRefresh', () => {
     const retry = vi.fn();
     await runRefresh([], {
       cachePath,
+      loadCredentialSourceImpl: cachedSourceLoader(cachePath),
       now: () => now + 30_000,
       fetchImpl: retry,
     });
@@ -762,6 +907,7 @@ describe('runRefresh', () => {
 
     expect(await runRefresh([], {
       cachePath,
+      loadCredentialSourceImpl: cachedSourceLoader(cachePath),
       now: () => now,
       fetchImpl: vi.fn().mockResolvedValue(response(200, USAGE)),
     })).toBe(0);

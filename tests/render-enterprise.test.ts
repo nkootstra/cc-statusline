@@ -16,8 +16,8 @@ import type { UsageResponse } from '../src/oauth/types';
 // Import the function under test
 // ---------------------------------------------------------------------------
 
+import { runRenderEnterprise } from '../src/subcommands/render';
 import {
-  runRenderEnterprise,
   AUTH_FATAL_HINT,
   MISSING_CACHE_HINT,
   CLOUDFLARE_HINT,

@@ -32,7 +32,17 @@ const RATE_LIMIT_DEFAULT_COOLDOWN_MS = 5 * 60 * 1000;
 const RATE_LIMIT_BACKOFF_MAX_MS = 15 * 60 * 1000;
 const RATE_LIMIT_BACKOFF_CAP_EXPONENT = 6;
 
-type SourceReloadReason = 'near-expiry' | 'auth-fatal' | 'usage-401';
+type SourceReloadReason =
+  | 'every-refresh'
+  | 'near-expiry'
+  | 'auth-fatal'
+  | 'usage-401';
+
+function sourceReloadReason(cache: Cache, nowMs: number): SourceReloadReason {
+  if (cache.authState === 'fatal') return 'auth-fatal';
+  if (cache.credentials.expiresAt - nowMs < SOURCE_RELOAD_THRESHOLD_MS) return 'near-expiry';
+  return 'every-refresh';
+}
 type LoadCredentialSource = (
   source: CredentialSource,
 ) => Promise<OAuthCredentials>;
@@ -281,6 +291,19 @@ async function persistNonSuccess(
     startingCredentials,
     startedAt,
     (current) => {
+      // A different token from the source may belong to another account
+      // after /login, so the old figures must not outlive a failed fetch.
+      if (
+        candidate !== undefined &&
+        candidate.accessToken !== current.credentials.accessToken
+      ) {
+        current.credentials = candidateCredentials(
+          current.credentials,
+          candidate,
+        );
+        current.usage = null;
+      }
+
       switch (result.kind) {
         case 'cloudflare-blocked':
           current.authState = 'cloudflare-blocked';
@@ -471,54 +494,34 @@ export async function runRefresh(
     await logger.log({ event: 'refresh.started' });
 
     let candidate: OAuthCredentials | undefined;
-    const needsSourceReload =
-      cache.authState === 'fatal' ||
-      cache.credentials.expiresAt - now() < SOURCE_RELOAD_THRESHOLD_MS;
-
-    if (needsSourceReload) {
-      const reason: SourceReloadReason =
-        cache.authState === 'fatal' ? 'auth-fatal' : 'near-expiry';
-      const loaded = await reloadSource(
-        cache,
-        reason,
-        loadSource,
-        logger,
-      );
-      if (loaded.kind === 'failure') {
-        const persisted = await persistSourceFailure(
-          startingCredentials,
-          startedAt,
-          cachePath,
-          loaded.message,
-          now,
-        );
-        await logger.log({
-          event: 'refresh.completed',
-          outcome: persisted ? 'source-failure' : 'stale-discarded',
-        });
-        return 0;
-      }
+    // Rereading on every refresh, not only near expiry, is what notices a
+    // /login to another account while the previous token is still valid.
+    const reason = sourceReloadReason(cache, now());
+    const loaded = await reloadSource(
+      cache,
+      reason,
+      loadSource,
+      logger,
+    );
+    const cachedTokenUsable = reason === 'every-refresh';
+    if (loaded.kind === 'success' && loaded.credentials.expiresAt > now()) {
       candidate = loaded.credentials;
-      if (candidate.expiresAt <= now()) {
-        const persisted = await persistSourceFailure(
-          startingCredentials,
-          startedAt,
-          cachePath,
-          'Access token expired; waiting for Claude Code to renew it',
-          now,
-        );
-        await logger.log({
-          event: 'refresh.completed',
-          outcome: persisted ? 'awaiting-renewal' : 'stale-discarded',
-        });
-        return 0;
+    } else if (!cachedTokenUsable) {
+      const persisted = await persistSourceFailure(
+        startingCredentials,
+        startedAt,
+        cachePath,
+        loaded.kind === 'failure'
+          ? loaded.message
+          : 'Access token expired; waiting for Claude Code to renew it',
+        now,
+      );
+      let outcome = 'stale-discarded';
+      if (persisted) {
+        outcome = loaded.kind === 'failure' ? 'source-failure' : 'awaiting-renewal';
       }
-    } else {
-      await logger.log({
-        event: 'credential-source.reload.decision',
-        action: 'skip',
-        reason: 'credential-fresh',
-      });
+      await logger.log({ event: 'refresh.completed', outcome });
+      return 0;
     }
 
     let usageResult = await requestUsage(

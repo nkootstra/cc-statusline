@@ -2,10 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  RATE_LIMITED_HINT_PREFIX,
-  runRenderEnterprise,
-} from '../src/subcommands/render-enterprise';
+import { runRenderEnterprise } from '../src/subcommands/render';
+import { RATE_LIMITED_HINT_PREFIX } from '../src/subcommands/render-enterprise';
 import { STALE_MARKER } from '../src/statusline/format';
 import { readCache, writeCache } from '../src/cache/store';
 import {

@@ -40,6 +40,7 @@ describe('runDoctor', () => {
 
   beforeEach(() => {
     tmpDir = makeTmpDir();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', tmpDir);
     captured = [];
     const orig = process.stdout.write.bind(process.stdout);
     const spy = vi
@@ -56,6 +57,7 @@ describe('runDoctor', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     restoreStdout();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -185,5 +187,55 @@ describe('runDoctor', () => {
     expect(output).toContain('usage.response');
     expect(output).toContain('"status":429');
     expect(output).not.toContain('sk-ant-secret-do-not-leak');
+  });
+
+  it.each([
+    [{ five_hour: { utilization: 1, resets_at: null }, seven_day: null, extra_usage: { is_enabled: true } }, '5h/7d windows + extra spend'],
+    [{ five_hour: null, seven_day: { utilization: 1, resets_at: null } }, '5h/7d windows'],
+    [{ five_hour: null, seven_day: null, extra_usage: { is_enabled: true } }, 'credits'],
+  ])('reports the layout detected from the cached usage (%#)', async (usage, label) => {
+    await writeCache(makeCache({ usage: usage as Cache['usage'] }), cachePathOf(tmpDir));
+
+    await runDoctor([], { cachePath: cachePathOf(tmpDir) });
+
+    expect(captured.join('')).toContain(`layout:        ${label}\n`);
+  });
+
+  it('reports the last access-token change from the diagnostics log', async () => {
+    const now = Date.parse('2026-07-22T10:10:00.000Z');
+    const cachePath = cachePathOf(tmpDir);
+    const logPath = path.join(tmpDir, 'debug.log');
+    await writeCache(makeCache(), cachePath);
+    fs.writeFileSync(
+      logPath,
+      [
+        { timestamp: '2026-07-22T10:00:00.000Z', event: 'credential-source.reload.result', result: 'success', accessTokenChanged: true },
+        { timestamp: '2026-07-22T10:05:00.000Z', event: 'credential-source.reload.result', result: 'success', accessTokenChanged: false },
+      ].map((event) => JSON.stringify(event)).join('\n') + '\n',
+      { mode: 0o600 },
+    );
+
+    await runDoctor([], { cachePath, logPath, now: () => now });
+
+    expect(captured.join('')).toContain('token changed: 10m ago\n');
+  });
+
+  it.each([
+    ['render --payload-only', 'pro (payload only; no usage cache)'],
+    ['render-promax', 'pro (payload only; no usage cache)'],
+    ['render', 'none (layout detected from each render)'],
+    ['render-enterprise', 'none (layout detected from each render)'],
+  ])('reports whether --plan overrides detection for %s', async (subcommand, label) => {
+    const settingsPath = path.join(tmpDir, 'settings.json');
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        statusLine: { type: 'command', command: `/x/cc-statusline.js ${subcommand}` },
+      }),
+    );
+
+    await runDoctor([], { cachePath: cachePathOf(tmpDir), settingsPath });
+
+    expect(captured.join('')).toContain(`plan override: ${label}\n`);
   });
 });

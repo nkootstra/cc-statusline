@@ -13,15 +13,17 @@ Usage:
   cc-statusline [--plan pro|max|enterprise] [--credentials-path=<path>] [--non-interactive] [--force]
   cc-statusline init [--plan pro|max|enterprise] [--credentials-path=<path>] [--non-interactive] [--force]
   cc-statusline uninstall
-  cc-statusline render-promax       (invoked by Claude Code; reads stdin)
-  cc-statusline render-enterprise   (invoked by Claude Code; reads stdin)
+  cc-statusline render [--payload-only]  (invoked by Claude Code; reads stdin)
   cc-statusline refresh             (background credential + usage refresh)
   cc-statusline doctor [--logs]     (print cache diagnostics; no credentials)
   cc-statusline --version           (print the installed version)
 
-Pro and Max use the same renderer; Enterprise uses cache-backed OAuth usage.
+One renderer picks the layout from what Claude Code sends: 5h/7d windows for
+Pro and Max, spend credits for Enterprise. --plan is optional; --plan pro
+installs a payload-only line that never reads credentials.
+render-promax and render-enterprise remain as aliases for older installs.
 
-Run \`npx @nkootstra/cc-statusline --plan pro\` to get started.
+Run \`npx @nkootstra/cc-statusline\` to get started.
 `;
 
 async function main(argv: string[]): Promise<number> {
@@ -52,13 +54,17 @@ async function main(argv: string[]): Promise<number> {
       const { runRefresh } = await import('./subcommands/refresh');
       return runRefresh(argv.slice(3));
     }
+    case 'render': {
+      const { runRender } = await import('./subcommands/render');
+      return runRender(argv.slice(3));
+    }
     case 'render-promax': {
-      const { runRenderPromax } = await import('./subcommands/render-promax');
-      return runRenderPromax();
+      const { runRenderPromax } = await import('./subcommands/render');
+      return runRenderPromax(argv.slice(3));
     }
     case 'render-enterprise': {
-      const { runRenderEnterprise } = await import('./subcommands/render-enterprise');
-      return runRenderEnterprise();
+      const { runRenderEnterprise } = await import('./subcommands/render');
+      return runRenderEnterprise(argv.slice(3));
     }
     case 'doctor': {
       const { runDoctor } = await import('./subcommands/doctor');

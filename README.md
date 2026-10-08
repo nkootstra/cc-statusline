@@ -5,18 +5,28 @@ Usage-aware [Claude Code](https://code.claude.com) statusline. Shows your curren
 ## Install
 
 ```bash
-npx @nkootstra/cc-statusline --plan pro
+npx @nkootstra/cc-statusline
 ```
 
-Use `--plan pro`, `--plan max`, or `--plan enterprise`. Pro shows the figures Claude Code pipes to the statusline and needs no credentials. Max and Enterprise read the usage API with Claude Code's own login, which is what shows per-model weekly windows such as Fable; Claude Code 2.1.278 does not forward those on its statusline payload. Pro accounts can use Fable as well, but Anthropic bills it there from usage credits rather than from a weekly Fable allowance ([Claude Fable models on your plan](https://support.claude.com/en/articles/15424964-claude-fable-models-on-your-plan)), so a Pro account has no per-model window to show. The installer writes the statusline command into `~/.claude/settings.json`.
+No plan choice is needed. The installer writes one `render` command into `~/.claude/settings.json`, and every render picks its layout from what Claude Code sends (see [What you'll see](#what-youll-see)). If Claude Code's login works with the usage API, init also writes a usage cache. The cache adds per-model weekly windows such as Fable (Claude Code 2.1.278 does not forward those on its statusline payload) and Enterprise spend credits. You can switch between a personal subscription and an Enterprise seat with `/login` without re-running init.
 
-Max installs made with 0.8.0 or earlier used the payload-only renderer. Re-run the installer with `--force` to switch.
+`--plan` is now an optional override:
+
+| Flag | Behavior |
+|---|---|
+| none | Tries Claude Code's credentials. If they are missing or rejected, it installs anyway without a cache: 5h/7d still show from the payload. Interactive terminals get a `y/N` offer to run `claude auth login` (default No); non-interactive installs print a one-line hint instead. |
+| `--plan pro` | Installs `render --payload-only`. It never reads credentials, writes a cache, or starts a background refresh. |
+| `--plan max`, `--plan enterprise` | Require valid credentials at install, as before (see below). They install the same `render` command. |
+
+Pro accounts can use Fable as well, but Anthropic bills it there from usage credits rather than from a weekly Fable allowance ([Claude Fable models on your plan](https://support.claude.com/en/articles/15424964-claude-fable-models-on-your-plan)), so a Pro account has no per-model window to show.
+
+Existing `render-promax` and `render-enterprise` settings keep working as aliases (`render --payload-only` and `render`). Re-running init rewrites them to the new command without a conflict prompt.
 
 Claude Code only runs custom statusline commands after the current workspace is trusted. If you see `statusline skipped · restart to fix`, accept the workspace trust prompt for the project and restart Claude Code.
 
 ### Max and Enterprise authentication
 
-Max and Enterprise setup validate Claude Code's current credential against the usage API. If the credential is missing, expired, or rejected during an interactive install, cc-statusline checks `claude auth status` to explain what it found, then starts the official:
+With `--plan max` or `--plan enterprise`, setup requires Claude Code's current credential to pass the usage API. If the credential is missing, expired, or rejected during an interactive install, cc-statusline checks `claude auth status` to explain what it found, then starts the official:
 
 ```bash
 claude auth login
@@ -24,44 +34,54 @@ claude auth login
 
 The status command is explanatory only. A successful usage API response is authoritative, and setup does not persist credentials until that validation succeeds.
 
-| Max or Enterprise init condition | Behavior |
+| `--plan max` / `--plan enterprise` init condition | Behavior |
 |---|---|
 | Valid, unexpired v4 cache with no `--force` or `--credentials-path` | Reuses the cache without credential discovery, network access, or login. |
 | Missing, expired, or usage-API-rejected Claude Code credential in an interactive terminal | Checks status, starts one login, rediscovers the credential, and validates it before installation. |
 | Authentication required with `--non-interactive` or without a TTY | Starts no Claude command and prints the manual login and install commands. |
-| `--credentials-path=<path>` | Validates only that authoritative file. It never starts Claude login or falls back to automatic discovery. |
-| Cloudflare block, rate limit, or transient network failure | Reports a retryable network failure without starting an unnecessary login. |
+| `--credentials-path=<path>` (with or without `--plan`) | Validates only that authoritative file. It never starts Claude login or falls back to automatic discovery. |
+| Cloudflare block, rate limit, or transient network failure | Reports a retryable network failure without starting an unnecessary login. Without `--plan`, init reports it and installs without a cache. |
 | Cancelled or failed login, missing post-login credentials, or failed post-login validation | Exits without activating a replacement and preserves any existing cache, installed bundle, and statusline setting. |
 
-`--plan max` and `--plan enterprise` select the plan without disabling interactive authentication. `--force` bypasses a valid-looking cache and revalidates the current credential; it starts login only when that credential is missing, expired, or rejected.
+`--force` bypasses a valid-looking cache and revalidates the current credential; it starts login only when that credential is missing, expired, or rejected.
 
-For terminals or automation where prompts are unavailable, authenticate first and then run the installer explicitly:
+For terminals or automation where prompts are unavailable, authenticate first and then run the installer:
 
 ```bash
 claude auth login
-npx @nkootstra/cc-statusline --plan enterprise --non-interactive
+npx @nkootstra/cc-statusline --non-interactive
 ```
 
-`--non-interactive` never starts login or prompts. It requires `--plan`; add `--force` when the cached credential must be revalidated or an existing statusline command must be replaced.
+`--non-interactive` never starts login or prompts. Add `--force` when the cached credential must be revalidated or an existing statusline command must be replaced.
 
-Max and Enterprise users upgrading from a cache version before schema v4 must run init once:
+Users upgrading from a cache version before schema v4 must run init once:
 
 ```bash
-npx @nkootstra/cc-statusline --plan enterprise
+npx @nkootstra/cc-statusline
 ```
 
-Older caches are intentionally ignored. Until init creates a v4 cache, the statusline shows `usage — · run init` and does not launch background refreshes.
+Older caches are intentionally ignored. Until init creates a v4 cache, an account whose payload has no rate limits shows `usage — · run init` and does not launch background refreshes.
 
 ## What you'll see
 
-- **Pro**: model name plus colorized 5-hour and 7-day rate-limit utilization. If Claude Code ever forwards per-model weekly windows (for example Fable) on its statusline payload, each one is appended after the 7-day figure under the label the server sends, with its own reset time shown only when it differs from the 7-day reset. As of Claude Code 2.1.278 it does not, which is why `--plan max` reads the usage API instead.
-- **Max / Enterprise**: model name plus cached monthly credits used / credits limit when monthly credits are enabled. Falls back to colorized 5-hour and 7-day rate-limit utilization. Per-model weekly windows from the usage endpoint's `limits` rows (for example Fable) are appended after that figure under the label the server sends, with their own reset time shown only when it differs from the 7-day reset. The credits figure comes from a local OAuth usage cache that is refreshed in the background every two minutes; a ` ~` marker appears when the cached value is older than that. The stale window is configurable with `CC_STATUSLINE_ENTERPRISE_STALE_MS` and clamped to 10–900 seconds. When Claude Code reports a non-zero current-session cost, it appears separately as `session $...`; this is Claude Code's client-side estimate and may differ from actual billing. If authentication cannot be repaired from the recorded source, the statusline shows `run init to repair auth`.
+The `render` command chooses a layout on every render:
 
-The Max and Enterprise renderer also enforces a cooldown after API `429` responses. The usage endpoint's limit is shared by every client signed in to the same account, including Claude Code itself and tools such as CodexBar, so a 429 usually means another client used the quota. If the server sends a `Retry-After` delay, cc-statusline waits that long; without one it waits five minutes, the same default CodexBar uses. Each further consecutive 429 doubles the wait, bounded to fifteen minutes. A single 429 only leaves the ` ~` marker on the last known figures; the ` rate-limited; retry in …` hint appears once two refreshes in a row have been rejected.
+| Claude Code payload | Usage cache | Shows |
+|---|---|---|
+| Gateway mode | ignored | model and context only (see [LLM gateways](#llm-gateways)) |
+| `rate_limits.five_hour` or `seven_day` present (Pro and Max) | any | 5h/7d from the payload, plus per-model weekly windows and `extra $used / $limit` from the cache when it has them |
+| no rate limits, cache has monthly credits (Enterprise) | present | credits used / limit |
+| no rate limits, cache has 5h/7d | present | 5h/7d from the cache (before Claude Code's first API response) |
+| no rate limits | missing | `usage — · run init` |
 
 The statusline uses two lines: the model, context usage, and prompt cache hit ratio on the first, and usage figures on the second. Every plan shows the session's prompt cache hit ratio after the context figure, for example `cache 87%`. It is the share of all input tokens this session that were read from cache, as reported by Claude Code (2.1.251 or later) on the statusline payload. Green means at least 80%, yellow at least 50%, red below that. The segment is dimmed once the cached prefix has outlived its TTL, and it is omitted until the session's first API response or when no response has reported cache tokens.
 
-Max and Enterprise use the same renderer and the same Claude Code login. They are separate installer choices only because Claude users know their subscription by those names.
+- **Pro and Max**: model name plus colorized 5-hour and 7-day utilization straight from Claude Code, so they are never older than the last API response. Per-model weekly windows from the usage endpoint's `limits` rows (for example Fable) follow under the label the server sends, with their own reset time shown only when it differs from the 7-day reset. If Claude Code ever forwards those windows on its payload, the payload wins. Max accounts with extra usage enabled keep this layout and get a trailing `extra $used / $limit` segment. Without a cache you see only the payload figures, with no `run init` nag. Claude Code's session cost appears as `$...`.
+- **Enterprise**: model name plus cached monthly credits used / credits limit, then per-model weekly windows. When Claude Code reports a non-zero current-session cost, it appears separately as `session $...`; this is Claude Code's client-side estimate and may differ from actual billing.
+
+Cached figures come from a local OAuth usage cache that is refreshed in the background every two minutes; a ` ~` marker appears when the cached value is older than that. The stale window is configurable with `CC_STATUSLINE_ENTERPRISE_STALE_MS` and clamped to 10–900 seconds. If the payload shows 5h/7d but the cache holds only credits, the cache most likely belongs to the account you just switched away from: its figures are hidden and a refresh starts within a minute. If authentication cannot be repaired from the recorded source, the statusline shows `run init to repair auth`.
+
+The renderer also enforces a cooldown after API `429` responses. The usage endpoint's limit is shared by every client signed in to the same account, including Claude Code itself and tools such as CodexBar, so a 429 usually means another client used the quota. If the server sends a `Retry-After` delay, cc-statusline waits that long; without one it waits five minutes, the same default CodexBar uses. Each further consecutive 429 doubles the wait, bounded to fifteen minutes. A single 429 only leaves the ` ~` marker on the last known figures; the ` rate-limited; retry in …` hint appears once two refreshes in a row have been rejected.
 
 Example Pro output:
 
@@ -70,11 +90,11 @@ Opus 4.7 · ctx 42% · cache 87%
 5h 102% · 7d 81% [Tue 20:00]
 ```
 
-Example Max output:
+Example Max output (with extra usage enabled):
 
 ```text
 Opus 4.7 · ctx 42% · cache 87%
-5h 102% · 7d 81% [Tue 20:00] · Fable 12%
+5h 102% · 7d 81% [Tue 20:00] · Fable 12% · extra $780.00 / $1000.00
 ```
 
 Example Enterprise output with monthly credits:
@@ -86,7 +106,7 @@ credits $780.00 / $1000.00 (78%) · Fable 12% [Tue 20:00] · session $0.08
 
 ### LLM gateways
 
-When Claude Code is routed through a different LLM gateway or provider, subscription usage does not apply, so every plan shows only the model, context usage, and prompt cache hit ratio, and the Max / Enterprise renderer skips the background usage refresh. Gateway mode is on when `ANTHROPIC_BASE_URL` points at a host outside `anthropic.com`, or when `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, or `CLAUDE_CODE_USE_FOUNDRY` is set to `1`, `true`, `yes`, or `on`. The statusline inherits Claude Code's environment, including the `env` block in `settings.json`.
+When Claude Code is routed through a different LLM gateway or provider, subscription usage does not apply, so every plan shows only the model, context usage, and prompt cache hit ratio, and the renderer skips the background usage refresh. Gateway mode is on when `ANTHROPIC_BASE_URL` points at a host outside `anthropic.com`, or when `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, or `CLAUDE_CODE_USE_FOUNDRY` is set to `1`, `true`, `yes`, or `on`. The statusline inherits Claude Code's environment, including the `env` block in `settings.json`.
 
 ```text
 Opus 4.7 · ctx 42% · cache 87%
@@ -124,17 +144,19 @@ Automatic discovery is recorded as the `Claude Code` credential source. When a d
 
 Only the `accessToken` is copied into the cache and sent as a Bearer token to the Anthropic usage endpoint. The cache is located at `~/.claude/cc-statusline/cache.json`, or under `$CLAUDE_CONFIG_DIR/cc-statusline/cache.json` when `CLAUDE_CONFIG_DIR` is set.
 
-Background refresh rereads the recorded source when the cached access token is near expiry, after a usage `401`, or while recovering from fatal authentication. With the `Claude Code` source, this lets cc-statusline pick up an access token renewed by Claude Code. cc-statusline itself does not rotate credentials. If source rereading cannot repair fatal authentication, run init as instructed by the statusline.
+Background refresh rereads the recorded source on every refresh (at most once per stale window, in the detached refresh process, never while rendering). With the `Claude Code` source, this lets cc-statusline pick up an access token renewed by Claude Code, and follow `/login` to another account even while the previous account's token is still valid. When the reread token differs from the cached one and the usage fetch then fails, cc-statusline adopts the new token and clears the cached figures instead of showing the previous account's usage. If the reread itself fails while the cached token is still valid, the refresh continues with the cached token. cc-statusline itself does not rotate credentials. If source rereading cannot repair fatal authentication, run init as instructed by the statusline.
 
 `cc-statusline doctor` reports `credential source: Claude Code` or `credential source: explicit file`, never the source path or token values. The statusline’s diagnostics cannot observe Claude Code or another application using the same account or OAuth credential; server-side/account-level evidence would be required for that.
 
 ## Diagnostics
 
-Max and Enterprise refresh decisions and OAuth request outcomes are recorded in a bounded, token-free JSONL log at `~/.claude/cc-statusline/debug.log`. To print the current cache state and retained diagnostic history, run:
+Refresh decisions and OAuth request outcomes are recorded in a bounded, token-free JSONL log at `~/.claude/cc-statusline/debug.log`. To print the current cache state and retained diagnostic history, run:
 
 ```bash
 cc-statusline doctor --logs
 ```
+
+`doctor` also reports the layout detected from the cached usage (`5h/7d windows`, `5h/7d windows + extra spend`, or `credits`), when the diagnostics last saw the access token change (a Claude Code renewal or a `/login` account switch), and whether `--plan pro` overrides layout detection.
 
 The log records endpoint labels, response status, request duration, refresh decisions, and rate-limit cooldown details. It never records access tokens, refresh tokens, authorization headers, or response bodies.
 

@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process';
 import type { SpawnOptions } from 'node:child_process';
-import { parseStdin, readStdin } from '../statusline/stdin';
 import {
   SEP,
   MISSING,
@@ -11,17 +10,11 @@ import {
   formatResetHint,
   formatOptionalHint,
 } from '../statusline/format';
-import {
-  readCache,
-  updateCache,
-  defaultCachePath,
-} from '../cache/store';
+import { updateCache } from '../cache/store';
 import type { Cache } from '../cache/store';
 import type { ExtraUsage, UsageBucket, UsageResponse } from '../oauth/types';
 import { modelScopedWindows } from '../oauth/usage';
 import { buildModelScopedSegments } from '../statusline/model-scoped';
-import { isGatewayMode } from '../statusline/gateway';
-import { buildCacheSegment } from '../statusline/prompt-cache';
 import {
   decideEnterpriseRefresh,
   rateLimitCooldownRemainingMs,
@@ -77,32 +70,9 @@ export type SpawnFn = (
   onError?: (err: Error) => void,
 ) => void;
 
-export interface RenderEnterpriseDeps {
-  cachePath?: string;
-  bundlePath?: string;
-  /** Override the spawn call for testing. Receives (command, args, opts). */
-  spawnRefresh?: SpawnFn;
-  now?: () => number;
-  env?: NodeJS.ProcessEnv;
-}
-
 // ---------------------------------------------------------------------------
 // Segment builders
 // ---------------------------------------------------------------------------
-
-function buildModelSegment(displayName: string): string {
-  return displayName || MISSING;
-}
-
-function buildCtxSegment(usedPercentage: number | null | undefined): string {
-  if (usedPercentage === null || usedPercentage === undefined) {
-    return '';
-  }
-  const pct = Math.round(usedPercentage);
-  const tier = colorTier(pct);
-  return `ctx ${applyColor(`${pct}%`, tier)}`;
-}
-
 
 function bucketResetHint(bucket: UsageBucket | null | undefined, nowMs: number): string {
   if (bucket === null || bucket === undefined) return MISSING;
@@ -124,7 +94,7 @@ function buildUsageBucketSegment(
     .join(' ');
 }
 
-function hasCreditUsage(extra: ExtraUsage): extra is ExtraUsage & {
+export function hasCreditUsage(extra: ExtraUsage): extra is ExtraUsage & {
   used_credits: number;
   monthly_limit: number;
 } {
@@ -139,7 +109,7 @@ function buildSessionCostSegment(sessionCostUsd: number): string {
   return `session $${sessionCostUsd.toFixed(2)}`;
 }
 
-function getStaleThresholdMs(): number {
+export function getStaleThresholdMs(): number {
   const raw = process.env[STALE_THRESHOLD_ENV];
   if (raw === undefined) {
     return STALE_THRESHOLD_DEFAULT_MS;
@@ -273,7 +243,7 @@ function buildMinimalEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function defaultSpawnFn(): SpawnFn {
+export function defaultSpawnFn(): SpawnFn {
   return (command, args, opts, onError): void => {
     const child = spawn(command, args, {
       ...opts,
@@ -341,134 +311,69 @@ async function releaseRefreshClaim(
 }
 
 // ---------------------------------------------------------------------------
-// Line renderer
+// Usage row
 // ---------------------------------------------------------------------------
 
-function renderLine(
-  input: NonNullable<ReturnType<typeof parseStdin>>,
+export function isCacheStale(cache: Cache | null, nowMs: number, staleThresholdMs: number): boolean {
+  const staleAge = cache !== null ? nowMs - cache.lastUsageRefreshAt : Infinity;
+  return staleAge >= staleThresholdMs;
+}
+
+export function buildAuthHint(cache: Cache | null, nowMs: number): string {
+  if (cache === null) return '';
+  if (cache.authState === 'fatal') return AUTH_FATAL_HINT;
+  if (cache.authState === 'cloudflare-blocked') return CLOUDFLARE_HINT;
+  const cooldownRemainingMs = rateLimitCooldownRemainingMs(cache, nowMs);
+  if (
+    cooldownRemainingMs > 0 &&
+    cache.consecutiveRateLimitCount >= RATE_LIMITED_HINT_MIN_CONSECUTIVE
+  ) {
+    return formatRateLimitedHint(cooldownRemainingMs);
+  }
+  return '';
+}
+
+export function buildCacheUsageRow(
   cache: Cache | null,
   nowMs: number,
   staleThresholdMs: number,
+  sessionCostUsd: number,
 ): string {
-  const staleAge = cache !== null ? nowMs - cache.lastUsageRefreshAt : Infinity;
-  const isStale = staleAge >= staleThresholdMs;
+  const isStale = isCacheStale(cache, nowMs, staleThresholdMs);
+  const { text: rawUsage, isFetching } = buildUsageSegment(cache, isStale, nowMs, sessionCostUsd);
 
-  const modelSeg = buildModelSegment(input.model.display_name);
-  const ctxSeg = buildCtxSegment(input.context_window?.used_percentage);
-  const cacheSeg = buildCacheSegment(input.prompt_cache);
-
-  // Build usage segment, folding live session cost into the enterprise spend figure.
-  const { text: rawUsage, isFetching } = buildUsageSegment(cache, isStale, nowMs, input.cost.total_cost_usd);
-
-  // Auth state overrides.
-  let usageSeg = rawUsage;
-  let authHint = '';
-
-  if (cache !== null) {
-    if (cache.authState === 'fatal') {
-      // Dim the figures (applies to everything in this segment).
-      // Only apply dim if the segment isn't already stale-dimmed.
-      if (!isFetching) {
-        if (isStale) {
-          // Already dimmed by staleness; just ensure stale marker is present.
-          // usageSeg is already dim + STALE_MARKER
-        } else {
-          usageSeg = applyDim(usageSeg);
-        }
-      } else {
-        // fetching… case: dim it too for consistency.
-        usageSeg = applyDim(usageSeg);
-      }
-      authHint = AUTH_FATAL_HINT;
-    } else if (cache.authState === 'cloudflare-blocked') {
-      // Render normally; just append hint.
-      authHint = CLOUDFLARE_HINT;
-    } else {
-      const cooldownRemainingMs = rateLimitCooldownRemainingMs(cache, nowMs);
-      if (
-        cooldownRemainingMs > 0 &&
-        cache.consecutiveRateLimitCount >= RATE_LIMITED_HINT_MIN_CONSECUTIVE
-      ) {
-        authHint = formatRateLimitedHint(cooldownRemainingMs);
-      }
-    }
-  }
-
-  const usageWithHint = authHint ? usageSeg + authHint : usageSeg;
-
-  const row1 = [modelSeg, ctxSeg, cacheSeg].filter(Boolean).join(SEP);
-  return row1 + '\n' + usageWithHint + '\n';
+  // Stale figures are already dimmed; a fatal state dims everything else,
+  // including the fetching placeholder.
+  const usageSeg = cache?.authState === 'fatal' && (isFetching || !isStale)
+    ? applyDim(rawUsage)
+    : rawUsage;
+  return usageSeg + buildAuthHint(cache, nowMs);
 }
 
 // ---------------------------------------------------------------------------
-// Entrypoint
+// Background refresh
 // ---------------------------------------------------------------------------
 
-/**
- * `render-enterprise` subcommand entrypoint.
- *
- * Reads stdin and the cache file synchronously, formats one line, prints to
- * stdout, then fires a detached refresh subprocess if the cache is stale.
- * Never makes a network call from the synchronous render path.
- *
- * @param _args       CLI args after the subcommand name (unused).
- * @param stdinSource Override stdin for testing.
- * @param deps        Dependency injection for testability.
- */
-export async function runRenderEnterprise(
-  _args: string[] = [],
-  stdinSource: NodeJS.ReadableStream = process.stdin,
-  deps: RenderEnterpriseDeps = {},
-): Promise<number> {
-  const cachePath = deps.cachePath ?? defaultCachePath();
-  const bundlePath = deps.bundlePath ?? __filename;
-  const now = deps.now ?? (() => Date.now());
-  const staleThresholdMs = getStaleThresholdMs();
-  const spawnFn = deps.spawnRefresh ?? defaultSpawnFn();
+export interface RefreshSpawnOptions {
+  cache: Cache | null;
+  cachePath: string;
+  bundlePath: string;
+  spawnFn: SpawnFn;
+  nowMs: number;
+  staleThresholdMs: number;
+}
 
-  // Step 1: Read stdin.
-  const raw = await readStdin(stdinSource);
-
-  if (raw === null) {
-    // Timeout — silent fail.
-    process.stdout.write('\n');
-    return 0;
-  }
-
-  const input = parseStdin(raw);
-
-  if (!input) {
-    // Non-JSON or empty stdin — silent fail.
-    process.stdout.write('\n');
-    return 0;
-  }
-
-  // Subscription usage does not apply behind a gateway, and the OAuth
-  // credentials the refresh needs may not exist at all.
-  if (isGatewayMode(deps.env ?? process.env)) {
-    const modelSeg = buildModelSegment(input.model.display_name);
-    const ctxSeg = buildCtxSegment(input.context_window?.used_percentage);
-    const cacheSeg = buildCacheSegment(input.prompt_cache);
-    process.stdout.write([modelSeg, ctxSeg, cacheSeg].filter(Boolean).join(SEP) + '\n');
-    return 0;
-  }
-
-  const cache = readCache(cachePath);
-  const nowMs = now();
-
-  // Print before touching the lock so concurrent sessions never wait on
-  // each other to show a line; the refresh claim is a side effect.
-  process.stdout.write(renderLine(input, cache, nowMs, staleThresholdMs));
-
+export async function startBackgroundRefresh(options: RefreshSpawnOptions): Promise<void> {
+  const { cache, cachePath, bundlePath, spawnFn, nowMs, staleThresholdMs } = options;
   const refreshDecision = decideEnterpriseRefresh(
     cache,
     nowMs,
     staleThresholdMs,
   );
-  if (refreshDecision.action !== 'spawn') return 0;
+  if (refreshDecision.action !== 'spawn') return;
 
   const claimedAt = await claimRefresh(cachePath, nowMs, staleThresholdMs);
-  if (claimedAt === null) return 0;
+  if (claimedAt === null) return;
 
   const release = (): void => {
     void releaseRefreshClaim(cachePath, claimedAt);
@@ -489,6 +394,4 @@ export async function runRenderEnterprise(
   } catch {
     await releaseRefreshClaim(cachePath, claimedAt);
   }
-
-  return 0;
 }

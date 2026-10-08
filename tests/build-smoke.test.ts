@@ -47,7 +47,8 @@ describe('build smoke', () => {
     const result = spawnSync(process.execPath, [BUNDLE, '--help'], { encoding: 'utf8' });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Usage:');
-    expect(result.stdout).toContain('Pro and Max use the same renderer');
+    expect(result.stdout).toContain('One renderer picks the layout');
+    expect(result.stdout).toContain('render [--payload-only]');
     expect(result.stdout.match(/--non-interactive/g)).toHaveLength(2);
     expect(result.stdout).toContain('background credential + usage refresh');
     expect(result.stdout).not.toContain('background token + usage refresh');
@@ -90,7 +91,7 @@ describe('build smoke', () => {
     expect(result.stdout).toContain('Pro statusline installed');
 
     const settings = JSON.parse(readFileSync(resolve(claudeDir, 'settings.json'), 'utf8'));
-    expect(settings.statusLine.command).toContain('render-promax');
+    expect(settings.statusLine.command).toMatch(/ render --payload-only$/);
   });
 
   it('exits non-zero on unknown subcommand', () => {
@@ -101,7 +102,12 @@ describe('build smoke', () => {
     expect(result.stderr).toContain('Unknown command');
   });
 
-  it('cold-starts within the platform threshold on the render path', () => {
+  it.each([
+    [['render-promax']],
+    [['render']],
+  ])('cold-starts within the platform threshold on the render path (%j)', (argv) => {
+    const home = mkdtempSync(resolve(tmpdir(), 'cc-statusline-render-'));
+    const claudeDir = resolve(home, '.claude');
     const threshold = process.platform === 'win32' ? 250 : 150;
     const nowSec = Math.floor(Date.now() / 1000);
     const payload = JSON.stringify({
@@ -114,9 +120,10 @@ describe('build smoke', () => {
     });
     const samples = Array.from({ length: 3 }, () => {
       const start = process.hrtime.bigint();
-      const result = spawnSync(process.execPath, [BUNDLE, 'render-promax'], {
+      const result = spawnSync(process.execPath, [BUNDLE, ...argv], {
         encoding: 'utf8',
         input: payload,
+        env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: claudeDir },
       });
       const elapsedMs = Number(process.hrtime.bigint() - start) / 1_000_000;
       expect(result.status).toBe(0);

@@ -6,9 +6,15 @@ import type { SpawnOptions } from 'node:child_process';
 import { vi } from 'vitest';
 import { writeCache, type Cache } from '../../src/cache/store';
 import type { UsageResponse } from '../../src/oauth/types';
-import { runRenderEnterprise } from '../../src/subcommands/render-enterprise';
+import { runRenderEnterprise, type RenderDeps } from '../../src/subcommands/render';
 
 const FIXTURES = resolve(__dirname, '..', 'fixtures');
+
+export type RenderEntry = (
+  args: string[],
+  stdinSource: NodeJS.ReadableStream,
+  deps: RenderDeps,
+) => Promise<number>;
 
 export interface SpawnCall {
   command: string;
@@ -115,6 +121,8 @@ export async function runWithCache(
     now?: () => number;
     bundlePath?: string;
     env?: NodeJS.ProcessEnv;
+    args?: string[];
+    entry?: RenderEntry;
   } = {},
 ): Promise<{
   output: string;
@@ -130,8 +138,8 @@ export async function runWithCache(
 
   try {
     const { output, exitCode } = await captureStdout(() =>
-      runRenderEnterprise(
-        [],
+      (extra.entry ?? runRenderEnterprise)(
+        extra.args ?? [],
         makeStream(stdinContent),
         {
           cachePath,

@@ -1,4 +1,10 @@
-import { readCache, defaultCachePath, isRefreshInFlight } from '../cache/store';
+import {
+  readCache,
+  defaultCachePath,
+  isRefreshInFlight,
+  type Cache,
+} from '../cache/store';
+import { readSettings, defaultSettingsPath } from '../settings/mutator';
 import {
   defaultDiagnosticLogPath,
   readDiagnosticLog,
@@ -7,10 +13,12 @@ import {
   rateLimitCooldownRemainingMs,
   refreshCooldownRemainingMs,
 } from './enterprise-refresh-policy';
+import { hasCachedWindows } from './render';
 
 export interface DoctorDeps {
   cachePath?: string;
   logPath?: string;
+  settingsPath?: string;
   now?: () => number;
 }
 
@@ -25,6 +33,55 @@ function formatRelativeMs(ms: number): string {
   return ms < 0 ? `${hours}h ago` : `in ${hours}h`;
 }
 
+function describeLayout(cache: Cache): string {
+  if (cache.usage === null) return 'unknown (no usage fetched yet)';
+  if (hasCachedWindows(cache.usage)) {
+    return cache.usage.extra_usage?.is_enabled === true
+      ? '5h/7d windows + extra spend'
+      : '5h/7d windows';
+  }
+  return cache.usage.extra_usage?.is_enabled === true ? 'credits' : 'no usage figures';
+}
+
+function describePlanOverride(settingsPath: string): string {
+  let command: string | undefined;
+  try {
+    command = readSettings(settingsPath).statusLine?.command;
+  } catch {
+    return 'unknown (settings.json unreadable)';
+  }
+  if (command === undefined) return 'unknown (no statusLine installed)';
+  if (command.endsWith(' render --payload-only') || command.endsWith(' render-promax')) {
+    return 'pro (payload only; no usage cache)';
+  }
+  if (command.endsWith(' render') || command.endsWith(' render-enterprise')) {
+    return 'none (layout detected from each render)';
+  }
+  return 'unknown (statusLine is not cc-statusline)';
+}
+
+// Claude Code's own renewal also changes the token, so this is the last
+// change of any kind, which includes an account switch after /login.
+function lastTokenChangeAt(log: string): number | null {
+  let latest: number | null = null;
+  for (const line of log.split('\n')) {
+    if (!line.includes('"accessTokenChanged":true')) continue;
+    try {
+      const event = JSON.parse(line) as { event?: unknown; timestamp?: unknown };
+      if (
+        event.event === 'credential-source.reload.result' &&
+        typeof event.timestamp === 'string'
+      ) {
+        const at = Date.parse(event.timestamp);
+        if (Number.isFinite(at)) latest = at;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return latest;
+}
+
 export async function runDoctor(
   args: string[] = [],
   deps: DoctorDeps = {},
@@ -33,9 +90,11 @@ export async function runDoctor(
   const logPath = deps.logPath ?? defaultDiagnosticLogPath(cachePath);
   const now = deps.now ?? (() => Date.now());
   const showLogs = args.includes('--logs');
+  const planOverride = describePlanOverride(deps.settingsPath ?? defaultSettingsPath());
 
   const lines: string[] = ['cc-statusline doctor', ''];
   lines.push(`cache path:    ${cachePath}`);
+  lines.push(`plan override: ${planOverride}`);
 
   const cache = readCache(cachePath);
 
@@ -72,6 +131,16 @@ export async function runDoctor(
       ? 'never'
       : formatRelativeMs(cache.lastUsageRefreshAt - nowMs);
   lines.push(`last usage:    ${lastUsageLabel}`);
+  lines.push(`layout:        ${describeLayout(cache)}`);
+
+  const tokenChangedAt = lastTokenChangeAt(await readDiagnosticLog(logPath));
+  lines.push(
+    `token changed: ${
+      tokenChangedAt === null
+        ? 'not in diagnostics'
+        : formatRelativeMs(tokenChangedAt - nowMs)
+    }`,
+  );
 
   const cooldownLabel =
     rateLimitRemainingMs > 0
