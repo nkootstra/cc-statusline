@@ -10,17 +10,16 @@ const PKG_VERSION: string = ((): string => {
 const HELP = `cc-statusline — usage-aware Claude Code statusline + installer
 
 Usage:
-  cc-statusline [--plan pro|max|enterprise] [--credentials-path=<path>] [--non-interactive] [--force]
-  cc-statusline init [--plan pro|max|enterprise] [--credentials-path=<path>] [--non-interactive] [--force]
+  cc-statusline [--credentials-path=<path>] [--non-interactive] [--force]
+  cc-statusline init [--credentials-path=<path>] [--non-interactive] [--force]
   cc-statusline uninstall
-  cc-statusline render [--payload-only]  (invoked by Claude Code; reads stdin)
+  cc-statusline render              (invoked by Claude Code; reads stdin)
   cc-statusline refresh             (background credential + usage refresh)
   cc-statusline doctor [--logs]     (print cache diagnostics; no credentials)
   cc-statusline --version           (print the installed version)
 
 One renderer picks the layout from what Claude Code sends: 5h/7d windows for
-Pro and Max, spend credits for Enterprise. --plan is optional; --plan pro
-installs a payload-only line that never reads credentials.
+Pro and Max, spend credits for Enterprise.
 render-promax and render-enterprise remain as aliases for older installs.
 
 Run \`npx @nkootstra/cc-statusline\` to get started.
@@ -54,17 +53,11 @@ async function main(argv: string[]): Promise<number> {
       const { runRefresh } = await import('./subcommands/refresh');
       return runRefresh(argv.slice(3));
     }
-    case 'render': {
-      const { runRender } = await import('./subcommands/render');
-      return runRender(argv.slice(3));
-    }
-    case 'render-promax': {
-      const { runRenderPromax } = await import('./subcommands/render');
-      return runRenderPromax(argv.slice(3));
-    }
+    case 'render':
+    case 'render-promax':
     case 'render-enterprise': {
-      const { runRenderEnterprise } = await import('./subcommands/render');
-      return runRenderEnterprise(argv.slice(3));
+      const { runRender } = await import('./subcommands/render');
+      return runRender();
     }
     case 'doctor': {
       const { runDoctor } = await import('./subcommands/doctor');

@@ -1,17 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
-  decideEnterpriseRefresh,
+  decideRefresh,
   refreshCooldownRemainingMs,
-} from '../src/subcommands/enterprise-refresh-policy';
-import { makeCache } from './support/render-enterprise';
+} from '../src/subcommands/refresh-policy';
+import { makeCache } from './support/render';
 
 const NOW = Date.parse('2026-07-28T12:00:00Z');
 const STALE_AFTER_MS = 60_000;
 
-describe('decideEnterpriseRefresh', () => {
+describe('decideRefresh', () => {
   it('requires init when no cache exists', () => {
     expect(
-      decideEnterpriseRefresh(null, NOW, STALE_AFTER_MS),
+      decideRefresh(null, NOW, STALE_AFTER_MS),
     ).toEqual({
       action: 'skip',
       reason: 'cache-missing',
@@ -26,7 +26,7 @@ describe('decideEnterpriseRefresh', () => {
     });
 
     expect(
-      decideEnterpriseRefresh(cache, NOW, STALE_AFTER_MS),
+      decideRefresh(cache, NOW, STALE_AFTER_MS),
     ).toEqual({ action: 'none' });
   });
 
@@ -36,7 +36,7 @@ describe('decideEnterpriseRefresh', () => {
     });
 
     expect(
-      decideEnterpriseRefresh(cache, NOW, STALE_AFTER_MS),
+      decideRefresh(cache, NOW, STALE_AFTER_MS),
     ).toEqual({
       action: 'spawn',
       reason: 'stale-cache',
@@ -52,7 +52,7 @@ describe('decideEnterpriseRefresh', () => {
     });
 
     expect(
-      decideEnterpriseRefresh(cache, NOW, STALE_AFTER_MS),
+      decideRefresh(cache, NOW, STALE_AFTER_MS),
     ).toMatchObject({
       action: 'skip',
       reason: 'in-flight',
@@ -72,14 +72,14 @@ describe('decideEnterpriseRefresh', () => {
     });
 
     expect(
-      decideEnterpriseRefresh(upstream, NOW, STALE_AFTER_MS),
+      decideRefresh(upstream, NOW, STALE_AFTER_MS),
     ).toMatchObject({
       action: 'skip',
       reason: 'rate-limit-cooldown',
       cooldownRemainingMs: 30_000,
     });
     expect(
-      decideEnterpriseRefresh(adaptive, NOW, STALE_AFTER_MS),
+      decideRefresh(adaptive, NOW, STALE_AFTER_MS),
     ).toMatchObject({
       action: 'skip',
       reason: 'adaptive-backoff',
@@ -95,7 +95,7 @@ describe('decideEnterpriseRefresh', () => {
     });
 
     expect(
-      decideEnterpriseRefresh(cache, NOW, STALE_AFTER_MS),
+      decideRefresh(cache, NOW, STALE_AFTER_MS),
     ).toMatchObject({
       action: 'skip',
       reason: 'retry-cooldown',
@@ -121,19 +121,19 @@ describe('decideEnterpriseRefresh', () => {
     });
 
     expect(
-      decideEnterpriseRefresh(firstAttempt, NOW, STALE_AFTER_MS),
+      decideRefresh(firstAttempt, NOW, STALE_AFTER_MS),
     ).toMatchObject({
       action: 'spawn',
       reason: 'auth-fatal-retry',
     });
     expect(
-      decideEnterpriseRefresh(throttled, NOW, STALE_AFTER_MS),
+      decideRefresh(throttled, NOW, STALE_AFTER_MS),
     ).toMatchObject({
       action: 'skip',
       reason: 'auth-fatal-throttled',
     });
     expect(
-      decideEnterpriseRefresh(retryEligible, NOW, STALE_AFTER_MS),
+      decideRefresh(retryEligible, NOW, STALE_AFTER_MS),
     ).toMatchObject({
       action: 'spawn',
       reason: 'auth-fatal-retry',

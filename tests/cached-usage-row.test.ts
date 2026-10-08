@@ -1,9 +1,3 @@
-/**
- * Tests for the render-enterprise subcommand (U8).
- *
- * All 20 scenarios from the plan are covered.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,16 +6,12 @@ import type { SpawnOptions } from 'node:child_process';
 import type { Cache } from '../src/cache/store';
 import type { UsageResponse } from '../src/oauth/types';
 
-// ---------------------------------------------------------------------------
-// Import the function under test
-// ---------------------------------------------------------------------------
-
-import { runRenderEnterprise } from '../src/subcommands/render';
+import { runRender } from '../src/subcommands/render';
 import {
   AUTH_FATAL_HINT,
   MISSING_CACHE_HINT,
   CLOUDFLARE_HINT,
-} from '../src/subcommands/render-enterprise';
+} from '../src/statusline/usage-status';
 import { STALE_MARKER, MISSING } from '../src/statusline/format';
 import * as storeModule from '../src/cache/store';
 import {
@@ -33,7 +23,7 @@ import {
   makeStream,
   runWithCache,
   setTTY,
-} from './support/render-enterprise';
+} from './support/render';
 
 // ---------------------------------------------------------------------------
 // Global setup / teardown
@@ -58,7 +48,7 @@ function goldenFableRow(resetsAt: string = new Date(2026, 4, 5, 16, 22, 0).toISO
   };
 }
 
-describe('golden Enterprise output', () => {
+describe('golden cached-usage output', () => {
   beforeEach(() => {
     vi.stubEnv('NO_COLOR', '1');
     vi.useFakeTimers();
@@ -181,7 +171,7 @@ describe('Scenario 1 (AE2): happy path — extra_usage enabled, recent cache', (
 
     const { output, exitCode, spawnCalls } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -197,7 +187,7 @@ describe('Scenario 1 (AE2): happy path — extra_usage enabled, recent cache', (
 
     const { output } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -220,7 +210,7 @@ describe('Scenario 1 (AE2): happy path — extra_usage enabled, recent cache', (
 
     const { output } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -242,7 +232,7 @@ describe('Scenario 2: recent cache (30 s) — no spawn fired, no stale markers',
 
     const { output, spawnCalls } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -274,7 +264,7 @@ describe('Scenario 3 (AE7): extra_usage.is_enabled=false — 5h/7d fallback', ()
 
     const { output } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -299,7 +289,7 @@ describe('Scenario 3 (AE7): extra_usage.is_enabled=false — 5h/7d fallback', ()
 
     const { output } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -326,7 +316,7 @@ describe('Scenario 3 (AE7): extra_usage.is_enabled=false — 5h/7d fallback', ()
 
     const { output } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -357,7 +347,7 @@ describe('Scenario 3 (AE7): extra_usage.is_enabled=false — 5h/7d fallback', ()
 
     const { output } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => injectedNow },
     );
 
@@ -380,7 +370,7 @@ describe('Scenario 3 (AE7): extra_usage.is_enabled=false — 5h/7d fallback', ()
 
     const { output, exitCode } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -404,7 +394,7 @@ describe('Scenario 4 (AE3): authState=fatal — dimmed figures + remediation hin
 
     const { output, exitCode } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -426,7 +416,7 @@ describe('Scenario 4 (AE3): authState=fatal — dimmed figures + remediation hin
     });
     const { spawnCalls } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -442,7 +432,7 @@ describe('Scenario 4 (AE3): authState=fatal — dimmed figures + remediation hin
     });
     const { spawnCalls } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       {
         now: () => NOW,
       },
@@ -461,7 +451,7 @@ describe('Scenario 4 (AE3): authState=fatal — dimmed figures + remediation hin
 
     const { spawnCalls } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -482,12 +472,12 @@ describe('Scenario 4 (AE3): authState=fatal — dimmed figures + remediation hin
 
     const first = await runWithCache(
       inFlight,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
     const second = await runWithCache(
       coolingDown,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -504,7 +494,7 @@ describe('Scenario 5: cache missing (null)', () => {
   it('renders "usage —" and the init hint without spawning refresh', async () => {
     const { output, exitCode, spawnCalls } = await runWithCache(
       null,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
     );
 
     expect(exitCode).toBe(0);
@@ -532,9 +522,8 @@ describe('Scenario 6: cache malformed — readCache returns null', () => {
 
     try {
       const { output, exitCode } = await captureStdout(() =>
-        runRenderEnterprise(
-          [],
-          makeStream(loadFixture('stdin-enterprise.json')),
+        runRender(
+          makeStream(loadFixture('stdin-no-rate-limits.json')),
           {
             cachePath,
             bundlePath: '/bundle.js',
@@ -592,8 +581,7 @@ describe('Scenario 8: stdin missing entirely — silent fail', () => {
     const readCacheSpy = vi.spyOn(storeModule, 'readCache').mockReturnValue(null);
 
     const { output, exitCode } = await captureStdout(() =>
-      runRenderEnterprise(
-        [],
+      runRender(
         makeStream(''),
         { cachePath: '/mocked', bundlePath: '/bundle.js' },
       ),
@@ -608,8 +596,7 @@ describe('Scenario 8: stdin missing entirely — silent fail', () => {
     const readCacheSpy = vi.spyOn(storeModule, 'readCache').mockReturnValue(null);
 
     const { output, exitCode } = await captureStdout(() =>
-      runRenderEnterprise(
-        [],
+      runRender(
         makeStream('   \n\t  '),
         { cachePath: '/mocked', bundlePath: '/bundle.js' },
       ),
@@ -635,7 +622,7 @@ describe('Scenario 12: extra_usage undefined — AE7 fallback', () => {
 
     const { output } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -666,7 +653,7 @@ describe('Scenario 13: is_enabled=true but used_credits missing — usage —', 
 
     const { output } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -685,7 +672,7 @@ describe('Scenario 13: is_enabled=true but used_credits missing — usage —', 
 
     const { output } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -708,7 +695,7 @@ describe('Scenario 14: authState=cloudflare-blocked — normal figures + cloudfl
 
     const { output, exitCode } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -729,7 +716,7 @@ describe('Scenario 14: authState=cloudflare-blocked — normal figures + cloudfl
 
     const { output } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -749,7 +736,7 @@ describe('Scenario 15: init-required UX → populated cache', () => {
     // First render: no cache.
     const { output: firstOutput, spawnCalls: firstSpawns } = await runWithCache(
       null,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -764,7 +751,7 @@ describe('Scenario 15: init-required UX → populated cache', () => {
 
     const { output: secondOutput, spawnCalls: secondSpawns } = await runWithCache(
       populatedCache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -788,7 +775,7 @@ describe('Scenario 16 (R15): stale + NO_COLOR=1 — textual STALE_MARKER visible
 
     const { output } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => NOW },
     );
 
@@ -816,7 +803,7 @@ describe('Scenario 17: global.fetch is never called', () => {
     ];
 
     for (const cache of scenarios) {
-      await runWithCache(cache, loadFixture('stdin-enterprise.json'), { now: () => NOW });
+      await runWithCache(cache, loadFixture('stdin-no-rate-limits.json'), { now: () => NOW });
     }
 
     expect(fetchSpy).not.toHaveBeenCalled();

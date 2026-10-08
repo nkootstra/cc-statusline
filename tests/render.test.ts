@@ -2,27 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Cache } from '../src/cache/store';
 import type { UsageLimitRow } from '../src/oauth/types';
 import {
-  runRender,
-  runRenderEnterprise,
-  runRenderPromax,
-} from '../src/subcommands/render';
-import {
   AUTH_FATAL_HINT,
   MISSING_CACHE_HINT,
-} from '../src/subcommands/render-enterprise';
+} from '../src/statusline/usage-status';
 import { MISSING, STALE_MARKER } from '../src/statusline/format';
-import * as storeModule from '../src/cache/store';
 import {
   GOLDEN_STDIN,
   makeCache,
   makeCacheWithUsage,
   runWithCache,
   setTTY,
-  type RenderEntry,
-} from './support/render-enterprise';
-
-const payloadOnly: RenderEntry = (args, stdin, deps) =>
-  runRender(['--payload-only', ...args], stdin, deps);
+} from './support/render';
 
 let NOW: number;
 let SEVEN_DAY_RESET: Date;
@@ -81,7 +71,6 @@ afterEach(() => {
 describe('render: subscription payload', () => {
   it('shows payload 5h/7d without a cache, with no init nag and no refresh', async () => {
     const { output, spawnCalls } = await runWithCache(null, subscriptionStdin(), {
-      entry: runRender,
       now: () => NOW,
     });
 
@@ -94,7 +83,7 @@ describe('render: subscription payload', () => {
     const { output, spawnCalls } = await runWithCache(
       freshCache({ extra_usage: { is_enabled: false } }),
       subscriptionStdin(),
-      { entry: runRender, now: () => NOW },
+      { now: () => NOW },
     );
 
     expect(output).toBe(
@@ -107,7 +96,7 @@ describe('render: subscription payload', () => {
     const { output } = await runWithCache(
       freshCache(),
       subscriptionStdin(),
-      { entry: runRender, now: () => NOW },
+      { now: () => NOW },
     );
 
     expect(output).toBe(
@@ -120,7 +109,7 @@ describe('render: subscription payload', () => {
     const { output } = await runWithCache(
       freshCache({ extra_usage: { is_enabled: true } }),
       subscriptionStdin(),
-      { entry: runRender, now: () => NOW },
+      { now: () => NOW },
     );
 
     expect(output).not.toContain('extra');
@@ -133,7 +122,7 @@ describe('render: subscription payload', () => {
         five_hour: { utilization: 99, resets_at: SEVEN_DAY_RESET.toISOString() },
       }),
       subscriptionStdin(),
-      { entry: runRender, now: () => NOW },
+      { now: () => NOW },
     );
 
     expect(output).toContain('5h 10%');
@@ -158,7 +147,7 @@ describe('render: subscription payload', () => {
           ],
         },
       }),
-      { entry: runRender, now: () => NOW },
+      { now: () => NOW },
     );
 
     expect(output).toContain('Fable 44%');
@@ -171,7 +160,7 @@ describe('render: subscription payload', () => {
         lastUsageRefreshAt: NOW - 10 * 60_000,
       }),
       subscriptionStdin(),
-      { entry: runRender, now: () => NOW },
+      { now: () => NOW },
     );
 
     expect(output).toBe(
@@ -185,7 +174,7 @@ describe('render: subscription payload', () => {
     const { output } = await runWithCache(
       freshCache({ extra_usage: { is_enabled: false } }, { authState: 'fatal' }),
       subscriptionStdin(),
-      { entry: runRender, now: () => NOW },
+      { now: () => NOW },
     );
 
     expect(output).toContain('5h 10%');
@@ -196,7 +185,7 @@ describe('render: subscription payload', () => {
     const { output, spawnCalls } = await runWithCache(
       freshCache({ five_hour: null, seven_day: null }, { lastUsageRefreshAt: NOW - 70_000 }),
       subscriptionStdin(),
-      { entry: runRender, now: () => NOW },
+      { now: () => NOW },
     );
 
     expect(output).toBe('Opus 4.7\n5h 10% [18:22] · 7d 20% [Tue 16:22]\n');
@@ -207,7 +196,7 @@ describe('render: subscription payload', () => {
     const { spawnCalls } = await runWithCache(
       freshCache({ five_hour: null, seven_day: null }, { lastUsageRefreshAt: NOW - 30_000 }),
       subscriptionStdin(),
-      { entry: runRender, now: () => NOW },
+      { now: () => NOW },
     );
 
     expect(spawnCalls).toHaveLength(0);
@@ -217,7 +206,6 @@ describe('render: subscription payload', () => {
     const stdin = JSON.parse(subscriptionStdin()) as Record<string, unknown>;
     stdin['cost'] = { total_cost_usd: 1.5 };
     const { output } = await runWithCache(null, JSON.stringify(stdin), {
-      entry: runRender,
       now: () => NOW,
     });
 
@@ -231,7 +219,7 @@ describe('render: subscription payload', () => {
         context_window: { used_percentage: 42 },
         prompt_cache: { hit_ratio: 0.87, warm: true, caching_observed: true },
       }),
-      { entry: runRender, now: () => NOW },
+      { now: () => NOW },
     );
 
     expect(output).toBe(
@@ -243,7 +231,6 @@ describe('render: subscription payload', () => {
 describe('render: no payload rate limits', () => {
   it('uses the credits layout for an Enterprise cache', async () => {
     const { output } = await runWithCache(freshCache(), GOLDEN_STDIN, {
-      entry: runRender,
       now: () => NOW,
     });
 
@@ -255,7 +242,7 @@ describe('render: no payload rate limits', () => {
     const { output } = await runWithCache(
       freshCache({ extra_usage: { is_enabled: false } }),
       GOLDEN_STDIN,
-      { entry: runRender, now: () => NOW },
+      { now: () => NOW },
     );
 
     expect(output).toContain('5h 42%');
@@ -265,7 +252,6 @@ describe('render: no payload rate limits', () => {
 
   it('asks for init when there is no cache either', async () => {
     const { output, spawnCalls } = await runWithCache(null, GOLDEN_STDIN, {
-      entry: runRender,
       now: () => NOW,
     });
 
@@ -280,7 +266,6 @@ describe('render: gateway mode', () => {
       makeCache({ lastUsageRefreshAt: 0 }),
       subscriptionStdin({ context_window: { used_percentage: 12 } }),
       {
-        entry: runRender,
         now: () => NOW,
         env: { ANTHROPIC_BASE_URL: 'https://gateway.example.com' },
       },
@@ -288,79 +273,5 @@ describe('render: gateway mode', () => {
 
     expect(output).toBe('Opus 4.7 · ctx 12%\n');
     expect(spawnCalls).toHaveLength(0);
-  });
-});
-
-describe('render --payload-only', () => {
-  it('never reads the cache or spawns a refresh', async () => {
-    const readSpy = vi.spyOn(storeModule, 'readCache');
-    const { output, spawnCalls } = await runWithCache(
-      freshCache({}, { lastUsageRefreshAt: 0 }),
-      subscriptionStdin(),
-      { entry: payloadOnly, now: () => NOW },
-    );
-
-    expect(output).toBe('Opus 4.7\n5h 10% [18:22] · 7d 20% [Tue 16:22]\n');
-    expect(readSpy).not.toHaveBeenCalled();
-    expect(spawnCalls).toHaveLength(0);
-  });
-
-  it('shows placeholders instead of the init nag before the first response', async () => {
-    const { output } = await runWithCache(null, GOLDEN_STDIN, {
-      entry: payloadOnly,
-      now: () => NOW,
-    });
-
-    expect(output).toBe(`Opus 4.7\n5h ${MISSING} · 7d ${MISSING}\n`);
-  });
-});
-
-describe('legacy subcommand aliases', () => {
-  const cases: Array<[string, () => Cache | null, () => string]> = [
-    ['subscription payload, no cache', () => null, () => subscriptionStdin()],
-    ['subscription payload, Max cache', () => freshCache(), () => subscriptionStdin()],
-    ['no rate limits, credits cache', () => freshCache(), () => GOLDEN_STDIN],
-    ['no rate limits, no cache', () => null, () => GOLDEN_STDIN],
-  ];
-
-  it.each(cases)('render-enterprise matches render (%s)', async (_label, cache, stdin) => {
-    const viaRender = await runWithCache(cache(), stdin(), {
-      entry: runRender,
-      now: () => NOW,
-    });
-    const viaAlias = await runWithCache(cache(), stdin(), {
-      entry: runRenderEnterprise,
-      now: () => NOW,
-    });
-
-    expect(viaAlias.output).toBe(viaRender.output);
-    expect(viaAlias.spawnCalls).toEqual(viaRender.spawnCalls);
-  });
-
-  it.each(cases)('render-promax matches render --payload-only (%s)', async (_label, cache, stdin) => {
-    const viaRender = await runWithCache(cache(), stdin(), {
-      entry: payloadOnly,
-      now: () => NOW,
-    });
-    const viaAlias = await runWithCache(cache(), stdin(), {
-      entry: runRenderPromax,
-      now: () => NOW,
-    });
-
-    expect(viaAlias.output).toBe(viaRender.output);
-    expect(viaAlias.spawnCalls).toEqual([]);
-  });
-
-  it('render-promax matches render for a subscription payload without a cache', async () => {
-    const viaRender = await runWithCache(null, subscriptionStdin(), {
-      entry: runRender,
-      now: () => NOW,
-    });
-    const viaAlias = await runWithCache(null, subscriptionStdin(), {
-      entry: runRenderPromax,
-      now: () => NOW,
-    });
-
-    expect(viaAlias.output).toBe(viaRender.output);
   });
 });

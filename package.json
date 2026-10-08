@@ -1,7 +1,7 @@
 {
   "name": "@nkootstra/cc-statusline",
   "version": "0.10.0",
-  "description": "Usage-aware Claude Code statusline + installer for Pro/Max and Enterprise users",
+  "description": "Usage-aware Claude Code statusline + installer for Pro, Max, and Enterprise users",
   "homepage": "https://github.com/nkootstra/cc-statusline#readme",
   "bugs": {
     "url": "https://github.com/nkootstra/cc-statusline/issues"
@@ -32,8 +32,8 @@
   "scripts": {
     "build": "tsup",
     "test": "npm run test:suite && npm run test:isolated",
-    "test:isolated": "vitest run tests/build-smoke.test.ts tests/render-enterprise-runtime.test.ts --maxWorkers=1",
-    "test:suite": "vitest run --exclude tests/build-smoke.test.ts --exclude tests/render-enterprise-runtime.test.ts",
+    "test:isolated": "vitest run tests/build-smoke.test.ts tests/background-refresh.test.ts --maxWorkers=1",
+    "test:suite": "vitest run --exclude tests/build-smoke.test.ts --exclude tests/background-refresh.test.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run typecheck && npm run build && npm test"

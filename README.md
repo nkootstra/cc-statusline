@@ -10,23 +10,17 @@ npx @nkootstra/cc-statusline
 
 No plan choice is needed. The installer writes one `render` command into `~/.claude/settings.json`, and every render picks its layout from what Claude Code sends (see [What you'll see](#what-youll-see)). If Claude Code's login works with the usage API, init also writes a usage cache. The cache adds per-model weekly windows such as Fable (Claude Code 2.1.278 does not forward those on its statusline payload) and Enterprise spend credits. You can switch between a personal subscription and an Enterprise seat with `/login` without re-running init.
 
-`--plan` is now an optional override:
-
-| Flag | Behavior |
-|---|---|
-| none | Tries Claude Code's credentials. If they are missing or rejected, it installs anyway without a cache: 5h/7d still show from the payload. Interactive terminals get a `y/N` offer to run `claude auth login` (default No); non-interactive installs print a one-line hint instead. |
-| `--plan pro` | Installs `render --payload-only`. It never reads credentials, writes a cache, or starts a background refresh. |
-| `--plan max`, `--plan enterprise` | Require valid credentials at install, as before (see below). They install the same `render` command. |
+If Claude Code's credentials are missing or rejected, init installs anyway without a cache: 5h/7d still show from the payload. Interactive terminals get a `y/N` offer to run `claude auth login` (default No); non-interactive installs print a one-line hint instead.
 
 Pro accounts can use Fable as well, but Anthropic bills it there from usage credits rather than from a weekly Fable allowance ([Claude Fable models on your plan](https://support.claude.com/en/articles/15424964-claude-fable-models-on-your-plan)), so a Pro account has no per-model window to show.
 
-Existing `render-promax` and `render-enterprise` settings keep working as aliases (`render --payload-only` and `render`). Re-running init rewrites them to the new command without a conflict prompt.
+Settings written by older versions (`render-promax`, `render-enterprise`, `render --payload-only`) keep working as aliases of `render`, and re-running init rewrites them without a conflict prompt. The old `--plan` flag is accepted and ignored.
 
 Claude Code only runs custom statusline commands after the current workspace is trusted. If you see `statusline skipped · restart to fix`, accept the workspace trust prompt for the project and restart Claude Code.
 
-### Max and Enterprise authentication
+### Authentication
 
-With `--plan max` or `--plan enterprise`, setup requires Claude Code's current credential to pass the usage API. If the credential is missing, expired, or rejected during an interactive install, cc-statusline checks `claude auth status` to explain what it found, then starts the official:
+When you accept the login offer, cc-statusline checks `claude auth status` to explain what it found, then starts the official:
 
 ```bash
 claude auth login
@@ -34,13 +28,14 @@ claude auth login
 
 The status command is explanatory only. A successful usage API response is authoritative, and setup does not persist credentials until that validation succeeds.
 
-| `--plan max` / `--plan enterprise` init condition | Behavior |
+| Init condition | Behavior |
 |---|---|
 | Valid, unexpired v4 cache with no `--force` or `--credentials-path` | Reuses the cache without credential discovery, network access, or login. |
-| Missing, expired, or usage-API-rejected Claude Code credential in an interactive terminal | Checks status, starts one login, rediscovers the credential, and validates it before installation. |
-| Authentication required with `--non-interactive` or without a TTY | Starts no Claude command and prints the manual login and install commands. |
-| `--credentials-path=<path>` (with or without `--plan`) | Validates only that authoritative file. It never starts Claude login or falls back to automatic discovery. |
-| Cloudflare block, rate limit, or transient network failure | Reports a retryable network failure without starting an unnecessary login. Without `--plan`, init reports it and installs without a cache. |
+| Missing, expired, or usage-API-rejected Claude Code credential in an interactive terminal | Offers login (default No). On yes, starts one login, rediscovers the credential, and validates it before installation. On no, installs without a cache. |
+| Missing or rejected credential with `--non-interactive` or without a TTY | Starts no Claude command, prints a one-line login hint, and installs without a cache. |
+| Claude Code credential that cannot be read | Reports why and installs without a cache. |
+| `--credentials-path=<path>` | Validates only that authoritative file and fails init if it does not work. It never starts Claude login or falls back to automatic discovery. |
+| Cloudflare block, rate limit, or transient network failure | Reports a retryable network failure and installs without a cache, without starting an unnecessary login. |
 | Cancelled or failed login, missing post-login credentials, or failed post-login validation | Exits without activating a replacement and preserves any existing cache, installed bundle, and statusline setting. |
 
 `--force` bypasses a valid-looking cache and revalidates the current credential; it starts login only when that credential is missing, expired, or rejected.
@@ -156,7 +151,7 @@ Refresh decisions and OAuth request outcomes are recorded in a bounded, token-fr
 cc-statusline doctor --logs
 ```
 
-`doctor` also reports the layout detected from the cached usage (`5h/7d windows`, `5h/7d windows + extra spend`, or `credits`), when the diagnostics last saw the access token change (a Claude Code renewal or a `/login` account switch), and whether `--plan pro` overrides layout detection.
+`doctor` also reports the layout detected from the cached usage (`5h/7d windows`, `5h/7d windows + extra spend`, or `credits`), and when the diagnostics last saw the access token change (a Claude Code renewal or a `/login` account switch).
 
 The log records endpoint labels, response status, request duration, refresh decisions, and rate-limit cooldown details. It never records access tokens, refresh tokens, authorization headers, or response bodies.
 

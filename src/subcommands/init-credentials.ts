@@ -17,7 +17,7 @@ import type {
   FetchUsageResult,
   UsageResponse,
 } from '../oauth/types';
-import { refreshCooldownRemainingMs } from './enterprise-refresh-policy';
+import { refreshCooldownRemainingMs } from './refresh-policy';
 
 const AUTH_STATUS_TIMEOUT_MS = 10_000;
 
@@ -34,12 +34,7 @@ export type SpawnClaude = (
   options: SpawnSyncOptions,
 ) => SpawnClaudeResult;
 
-export type UsageApiPlan = 'max' | 'enterprise';
-
-// 'auto' is init without --plan: the usage API is optional there, so missing
-// or rejected credentials install a payload-only line instead of failing.
-export interface EnterprisePreparationOptions {
-  plan: UsageApiPlan | 'auto';
+export interface CredentialPreparationOptions {
   cachePath: string;
   credentialsPath?: string;
   force: boolean;
@@ -54,7 +49,7 @@ export interface EnterprisePreparationOptions {
   fetchImpl?: typeof fetch;
 }
 
-export type EnterprisePreparation =
+export type CredentialPreparation =
   | { kind: 'ready'; cache: Cache | null; reusedExistingCache: boolean }
   | { kind: 'exit'; code: number };
 
@@ -229,7 +224,7 @@ export const OPTIONAL_AUTH_HINT =
 type AutoLoginChoice = 'login' | 'skip' | 'interrupted';
 
 async function offerLogin(
-  options: EnterprisePreparationOptions,
+  options: CredentialPreparationOptions,
 ): Promise<AutoLoginChoice> {
   if (!options.canInteract) {
     process.stdout.write(OPTIONAL_AUTH_HINT);
@@ -254,22 +249,13 @@ async function offerLogin(
   return 'login';
 }
 
-function printManualAuthInstructions(plan: UsageApiPlan): void {
-  process.stderr.write(
-    'init: Claude Code authentication is required. Run:\n' +
-    'claude auth login\n' +
-    `npx @nkootstra/cc-statusline --plan ${plan}\n`,
-  );
-}
-
 async function recoverAutomaticCredentials(
-  options: EnterprisePreparationOptions,
+  options: CredentialPreparationOptions,
 ): Promise<
   | { kind: 'success'; credentials: OAuthCredentials; usage: UsageResponse }
   | { kind: 'skip' }
   | { kind: 'exit'; code: number }
 > {
-  const optional = options.plan === 'auto';
   let credentials: OAuthCredentials | null = null;
   try {
     credentials = await options.discoverFn(options.discoverOptions);
@@ -281,11 +267,8 @@ async function recoverAutomaticCredentials(
           ? 'init: could not read Claude Code credentials.\n'
           : `init: could not read Claude Code credentials: ${reason}.\n`,
       );
-      if (optional) {
-        process.stdout.write(OPTIONAL_AUTH_HINT);
-        return { kind: 'skip' };
-      }
-      return { kind: 'exit', code: 3 };
+      process.stdout.write(OPTIONAL_AUTH_HINT);
+      return { kind: 'skip' };
     }
   }
 
@@ -300,18 +283,13 @@ async function recoverAutomaticCredentials(
     }
     if (validation.kind === 'network-failure') {
       printNetworkFailure(validation, credentials);
-      return optional ? { kind: 'skip' } : { kind: 'exit', code: 4 };
+      return { kind: 'skip' };
     }
   }
 
-  if (options.plan === 'auto') {
-    const choice = await offerLogin(options);
-    if (choice === 'skip') return { kind: 'skip' };
-    if (choice === 'interrupted') return { kind: 'exit', code: 130 };
-  } else if (!options.canInteract) {
-    printManualAuthInstructions(options.plan);
-    return { kind: 'exit', code: 2 };
-  }
+  const choice = await offerLogin(options);
+  if (choice === 'skip') return { kind: 'skip' };
+  if (choice === 'interrupted') return { kind: 'exit', code: 130 };
 
   const env = claudeEnvironment(options.platform, options.homedir);
   const status = options.spawnClaude('claude', ['auth', 'status'], {
@@ -380,9 +358,11 @@ async function recoverAutomaticCredentials(
   return { kind: 'success', credentials, usage: validation.usage };
 }
 
-export async function prepareEnterprise(
-  options: EnterprisePreparationOptions,
-): Promise<EnterprisePreparation> {
+// The usage API is optional: missing or rejected Claude Code credentials
+// install without a cache, while an explicit --credentials-path must work.
+export async function prepareCredentials(
+  options: CredentialPreparationOptions,
+): Promise<CredentialPreparation> {
   if (!options.force && options.credentialsPath === undefined) {
     const existingCache = readCache(options.cachePath);
     if (
@@ -477,11 +457,4 @@ export async function prepareEnterprise(
     ),
     reusedExistingCache: false,
   };
-}
-
-export function printEnterpriseSuccess(planLabel: string): void {
-  process.stdout.write(
-    `${planLabel} statusline installed. Restart Claude Code to see usage in the prompt area.\n` +
-    'If Claude Code shows "statusline skipped", accept workspace trust for this project.\n',
-  );
 }

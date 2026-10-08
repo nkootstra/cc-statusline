@@ -68,6 +68,7 @@ describe('runDoctor', () => {
     const output = captured.join('');
     expect(output).toContain('absent');
     expect(output).toContain('run init');
+    expect(output).not.toContain('plan override');
   });
 
   it('treats malformed v4 JSON as an absent cache', async () => {
@@ -218,24 +219,5 @@ describe('runDoctor', () => {
     await runDoctor([], { cachePath, logPath, now: () => now });
 
     expect(captured.join('')).toContain('token changed: 10m ago\n');
-  });
-
-  it.each([
-    ['render --payload-only', 'pro (payload only; no usage cache)'],
-    ['render-promax', 'pro (payload only; no usage cache)'],
-    ['render', 'none (layout detected from each render)'],
-    ['render-enterprise', 'none (layout detected from each render)'],
-  ])('reports whether --plan overrides detection for %s', async (subcommand, label) => {
-    const settingsPath = path.join(tmpDir, 'settings.json');
-    fs.writeFileSync(
-      settingsPath,
-      JSON.stringify({
-        statusLine: { type: 'command', command: `/x/cc-statusline.js ${subcommand}` },
-      }),
-    );
-
-    await runDoctor([], { cachePath: cachePathOf(tmpDir), settingsPath });
-
-    expect(captured.join('')).toContain(`plan override: ${label}\n`);
   });
 });

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { builtinModules } from 'node:module';
-import { mkdtempSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -48,7 +48,8 @@ describe('build smoke', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Usage:');
     expect(result.stdout).toContain('One renderer picks the layout');
-    expect(result.stdout).toContain('render [--payload-only]');
+    expect(result.stdout).toContain('cc-statusline render ');
+    expect(result.stdout).not.toContain('--plan');
     expect(result.stdout.match(/--non-interactive/g)).toHaveLength(2);
     expect(result.stdout).toContain('background credential + usage refresh');
     expect(result.stdout).not.toContain('background token + usage refresh');
@@ -73,25 +74,61 @@ describe('build smoke', () => {
     expect(result.stdout.trim()).toBe(pkg.version);
   });
 
-  it('runs init directly with --plan pro --force', () => {
+  // A foreign statusline makes init stop at the conflict check, before
+  // credential discovery could reach the keychain or the network.
+  it('runs init directly and ignores --plan with a notice', () => {
     const home = mkdtempSync(resolve(tmpdir(), 'cc-statusline-npx-'));
     const claudeDir = resolve(home, '.claude');
     mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(
+      resolve(claudeDir, 'settings.json'),
+      JSON.stringify({ statusLine: { type: 'command', command: '/other/statusline' } }),
+    );
 
     const result = spawnSync(
       process.execPath,
-      [BUNDLE, '--plan', 'pro', '--force'],
+      [BUNDLE, '--plan', 'pro'],
       {
         encoding: 'utf8',
         env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: claudeDir },
       },
     );
 
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain('Pro statusline installed');
-
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('init: --plan is no longer needed and is ignored');
     const settings = JSON.parse(readFileSync(resolve(claudeDir, 'settings.json'), 'utf8'));
-    expect(settings.statusLine.command).toMatch(/ render --payload-only$/);
+    expect(settings.statusLine.command).toBe('/other/statusline');
+  });
+
+  it('renders the same output for render and its legacy aliases', () => {
+    const home = mkdtempSync(resolve(tmpdir(), 'cc-statusline-alias-'));
+    const claudeDir = resolve(home, '.claude');
+    const nowSec = Math.floor(Date.now() / 1000);
+    const payload = JSON.stringify({
+      model: { id: 'claude-opus-4-7', display_name: 'Opus 4.7' },
+      cost: { total_cost_usd: 0 },
+      rate_limits: {
+        five_hour: { used_percentage: 10, resets_at: nowSec + 3_600 },
+        seven_day: { used_percentage: 20, resets_at: nowSec + 7_200 },
+      },
+    });
+    const outputs = [
+      ['render'],
+      ['render-promax'],
+      ['render-enterprise'],
+      ['render', '--payload-only'],
+    ].map((argv) => {
+      const result = spawnSync(process.execPath, [BUNDLE, ...argv], {
+        encoding: 'utf8',
+        input: payload,
+        env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: claudeDir },
+      });
+      expect(result.status).toBe(0);
+      return result.stdout;
+    });
+
+    expect(outputs[0]).toContain('Opus 4.7');
+    expect(new Set(outputs).size).toBe(1);
   });
 
   it('exits non-zero on unknown subcommand', () => {

@@ -21,7 +21,7 @@ import type {
   FetchUsageResult,
   RateLimitDiagnostics,
 } from '../oauth/types';
-import { refreshCooldownRemainingMs } from './enterprise-refresh-policy';
+import { refreshCooldownRemainingMs } from './refresh-policy';
 
 const SOURCE_RELOAD_THRESHOLD_MS = 5 * 60 * 1000;
 const FAILURE_RETRY_DELAY_MS = 60 * 1000;

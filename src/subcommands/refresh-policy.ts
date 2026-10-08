@@ -47,7 +47,7 @@ export function rateLimitCooldownRemainingMs(
   return refreshCooldownRemainingMs(cache, nowMs);
 }
 
-export function decideEnterpriseRefresh(
+export function decideRefresh(
   cache: Cache | null,
   nowMs: number,
   staleThresholdMs: number,

@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runRenderEnterprise } from '../src/subcommands/render';
-import { RATE_LIMITED_HINT_PREFIX } from '../src/subcommands/render-enterprise';
+import { runRender } from '../src/subcommands/render';
+import { RATE_LIMITED_HINT_PREFIX } from '../src/statusline/usage-status';
 import { STALE_MARKER } from '../src/statusline/format';
 import { readCache, writeCache } from '../src/cache/store';
 import {
@@ -14,7 +14,7 @@ import {
   runWithCache,
   setTTY,
   type SpawnCall,
-} from './support/render-enterprise';
+} from './support/render';
 
 beforeEach(() => {
   vi.stubEnv('NO_COLOR', '');
@@ -35,7 +35,7 @@ describe('background refresh integration', () => {
 
     const { output, spawnCalls } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => now },
     );
 
@@ -52,7 +52,7 @@ describe('background refresh integration', () => {
 
     const { spawnCalls } = await runWithCache(
       cache,
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => now },
     );
 
@@ -67,14 +67,13 @@ describe('background refresh integration', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'cc-statusline-render-perf-'));
     const cachePath = join(tempDir, 'cache.json');
     await writeCache(cache, cachePath);
-    const stdin = makeStream(loadFixture('stdin-enterprise.json'));
+    const stdin = makeStream(loadFixture('stdin-no-rate-limits.json'));
     let spawned = false;
     const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
 
     try {
       const startedAt = performance.now();
-      const exitCode = await runRenderEnterprise(
-        [],
+      const exitCode = await runRender(
         stdin,
         {
           cachePath,
@@ -123,14 +122,12 @@ describe('background refresh integration', () => {
       };
 
       await Promise.all([
-        runRenderEnterprise(
-          [],
-          makeStream(loadFixture('stdin-enterprise.json')),
+        runRender(
+          makeStream(loadFixture('stdin-no-rate-limits.json')),
           deps,
         ),
-        runRenderEnterprise(
-          [],
-          makeStream(loadFixture('stdin-enterprise.json')),
+        runRender(
+          makeStream(loadFixture('stdin-no-rate-limits.json')),
           deps,
         ),
       ]);
@@ -163,16 +160,14 @@ describe('background refresh integration', () => {
 
     try {
       await captureStdout(() =>
-        runRenderEnterprise(
-          [],
-          makeStream(loadFixture('stdin-enterprise.json')),
+        runRender(
+          makeStream(loadFixture('stdin-no-rate-limits.json')),
           deps,
         ),
       );
       await captureStdout(() =>
-        runRenderEnterprise(
-          [],
-          makeStream(loadFixture('stdin-enterprise.json')),
+        runRender(
+          makeStream(loadFixture('stdin-no-rate-limits.json')),
           deps,
         ),
       );
@@ -194,9 +189,8 @@ describe('background refresh integration', () => {
 
     try {
       await captureStdout(() =>
-        runRenderEnterprise(
-          [],
-          makeStream(loadFixture('stdin-enterprise.json')),
+        runRender(
+          makeStream(loadFixture('stdin-no-rate-limits.json')),
           {
             cachePath,
             bundlePath: '/bundle.js',
@@ -232,7 +226,7 @@ describe('refresh process boundary', () => {
       makeCacheWithUsage({}, {
         lastUsageRefreshAt: now - 5 * 60_000,
       }),
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => now, bundlePath },
     );
     const call = spawnCalls[0];
@@ -284,7 +278,7 @@ describe('refresh process boundary', () => {
       makeCacheWithUsage({}, {
         lastUsageRefreshAt: now - 5 * 60_000,
       }),
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => now },
     );
 
@@ -311,7 +305,7 @@ describe('refresh process boundary', () => {
 
     const { spawnCalls } = await runWithCache(
       makeCacheWithUsage({}, { lastUsageRefreshAt: now - 5 * 60_000 }),
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => now },
     );
 
@@ -348,7 +342,7 @@ describe('stale threshold configuration', () => {
         makeCacheWithUsage({}, {
           lastUsageRefreshAt: now - ageMs,
         }),
-        loadFixture('stdin-enterprise.json'),
+        loadFixture('stdin-no-rate-limits.json'),
         { now: () => now },
       );
 
@@ -368,7 +362,7 @@ describe('rate-limit rendering', () => {
         rateLimitedUntilMs: now + 4 * 60_000,
         consecutiveRateLimitCount: 2,
       }),
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => now },
     );
 
@@ -387,7 +381,7 @@ describe('rate-limit rendering', () => {
         nextRefreshAllowedAt: now + 4 * 60_000,
         consecutiveRateLimitCount: 1,
       }),
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => now },
     );
 
@@ -405,7 +399,7 @@ describe('rate-limit rendering', () => {
         rateLimitedUntilMs: now + 30_000,
         consecutiveRateLimitCount: 2,
       }),
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => now },
     );
 
@@ -420,7 +414,7 @@ describe('rate-limit rendering', () => {
         lastUsageRefreshAt: now - 30_000,
         rateLimitedUntilMs: now - 1,
       }),
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => now },
     );
 
@@ -438,7 +432,7 @@ describe('rate-limit rendering', () => {
         nextRefreshAllowedAt: now + 2 * 60_000,
         consecutiveRateLimitCount: 2,
       }),
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => now },
     );
 
@@ -455,7 +449,7 @@ describe('rate-limit rendering', () => {
         rateLimitedUntilMs: now + 2 * 60_000,
         consecutiveRateLimitCount: 2,
       }),
-      loadFixture('stdin-enterprise.json'),
+      loadFixture('stdin-no-rate-limits.json'),
       { now: () => now },
     );
 

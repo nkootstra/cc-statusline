@@ -17,33 +17,33 @@ describe('parseStdin — Pro/Max fixture', () => {
   let result: StatuslineInput | null;
 
   it('parses without returning null', () => {
-    result = parseStdin(loadFixture('stdin-promax.json'));
+    result = parseStdin(loadFixture('stdin-subscription.json'));
     expect(result).not.toBeNull();
   });
 
   it('preserves session_id', () => {
-    result = parseStdin(loadFixture('stdin-promax.json'));
-    expect(result?.session_id).toBe('sess_01ProMaxExampleSession12345');
+    result = parseStdin(loadFixture('stdin-subscription.json'));
+    expect(result?.session_id).toBe('sess_01SubscriptionExampleSession1');
   });
 
   it('preserves model fields', () => {
-    result = parseStdin(loadFixture('stdin-promax.json'));
+    result = parseStdin(loadFixture('stdin-subscription.json'));
     expect(result?.model.id).toBe('claude-sonnet-4-5');
     expect(result?.model.display_name).toBe('claude-sonnet-4-5');
   });
 
   it('preserves cost.total_cost_usd', () => {
-    result = parseStdin(loadFixture('stdin-promax.json'));
+    result = parseStdin(loadFixture('stdin-subscription.json'));
     expect(result?.cost.total_cost_usd).toBeCloseTo(0.042);
   });
 
   it('preserves context_window.used_percentage as a number', () => {
-    result = parseStdin(loadFixture('stdin-promax.json'));
+    result = parseStdin(loadFixture('stdin-subscription.json'));
     expect(result?.context_window?.used_percentage).toBe(22);
   });
 
   it('populates rate_limits.five_hour', () => {
-    result = parseStdin(loadFixture('stdin-promax.json'));
+    result = parseStdin(loadFixture('stdin-subscription.json'));
     expect(result?.rate_limits?.five_hour).toEqual({
       used_percentage: 45,
       resetsAt: 1714502400,
@@ -51,7 +51,7 @@ describe('parseStdin — Pro/Max fixture', () => {
   });
 
   it('populates rate_limits.seven_day', () => {
-    result = parseStdin(loadFixture('stdin-promax.json'));
+    result = parseStdin(loadFixture('stdin-subscription.json'));
     expect(result?.rate_limits?.seven_day).toEqual({
       used_percentage: 31,
       resetsAt: 1714934400,
@@ -59,7 +59,7 @@ describe('parseStdin — Pro/Max fixture', () => {
   });
 
   it('populates rate_limits.seven_day_opus', () => {
-    result = parseStdin(loadFixture('stdin-promax.json'));
+    result = parseStdin(loadFixture('stdin-subscription.json'));
     expect(result?.rate_limits?.seven_day_opus).toEqual({
       used_percentage: 10,
       resetsAt: 1714934400,
@@ -67,7 +67,7 @@ describe('parseStdin — Pro/Max fixture', () => {
   });
 
   it('populates rate_limits.model_scoped', () => {
-    result = parseStdin(loadFixture('stdin-promax.json'));
+    result = parseStdin(loadFixture('stdin-subscription.json'));
     expect(result?.rate_limits?.model_scoped).toEqual([
       { display_name: 'Fable', utilization: 12, resets_at: '2024-05-05T18:40:00.000Z' },
     ]);
@@ -98,22 +98,22 @@ describe('parseStdin — Pro/Max fixture', () => {
 
 describe('parseStdin — Enterprise fixture', () => {
   it('parses without returning null', () => {
-    const result = parseStdin(loadFixture('stdin-enterprise.json'));
+    const result = parseStdin(loadFixture('stdin-no-rate-limits.json'));
     expect(result).not.toBeNull();
   });
 
   it('has rate_limits === undefined', () => {
-    const result = parseStdin(loadFixture('stdin-enterprise.json'));
+    const result = parseStdin(loadFixture('stdin-no-rate-limits.json'));
     expect(result?.rate_limits).toBeUndefined();
   });
 
   it('preserves session_id', () => {
-    const result = parseStdin(loadFixture('stdin-enterprise.json'));
-    expect(result?.session_id).toBe('sess_01EnterpriseExampleSession67890');
+    const result = parseStdin(loadFixture('stdin-no-rate-limits.json'));
+    expect(result?.session_id).toBe('sess_01NoRateLimitsExampleSession1');
   });
 
   it('preserves exceeds_200k_tokens = false', () => {
-    const result = parseStdin(loadFixture('stdin-enterprise.json'));
+    const result = parseStdin(loadFixture('stdin-no-rate-limits.json'));
     expect(result?.exceeds_200k_tokens).toBe(false);
   });
 });
@@ -151,7 +151,7 @@ describe('parseStdin — context_window.used_percentage null', () => {
   });
 
   it('matches the Enterprise fixture which has used_percentage: null', () => {
-    const result = parseStdin(loadFixture('stdin-enterprise.json'));
+    const result = parseStdin(loadFixture('stdin-no-rate-limits.json'));
     expect(result?.context_window?.used_percentage).toBeNull();
   });
 });
@@ -162,7 +162,7 @@ describe('parseStdin — context_window.used_percentage null', () => {
 
 describe('parseStdin — cost.total_cost_usd zero', () => {
   it('returns 0 (not NaN, not undefined)', () => {
-    const result = parseStdin(loadFixture('stdin-enterprise.json'));
+    const result = parseStdin(loadFixture('stdin-no-rate-limits.json'));
     expect(result?.cost.total_cost_usd).toBe(0);
   });
 });
@@ -281,12 +281,12 @@ describe('parseStdin — rate_limits.model_scoped', () => {
 
 describe('parseStdin — prompt_cache', () => {
   function parseWith(promptCache: unknown): StatuslineInput | null {
-    const base = JSON.parse(loadFixture('stdin-promax.json')) as Record<string, unknown>;
+    const base = JSON.parse(loadFixture('stdin-subscription.json')) as Record<string, unknown>;
     return parseStdin(JSON.stringify({ ...base, prompt_cache: promptCache }));
   }
 
   it('is undefined when Claude Code does not send it', () => {
-    expect(parseStdin(loadFixture('stdin-promax.json'))?.prompt_cache).toBeUndefined();
+    expect(parseStdin(loadFixture('stdin-subscription.json'))?.prompt_cache).toBeUndefined();
   });
 
   it('reads hit_ratio, warm and caching_observed', () => {
