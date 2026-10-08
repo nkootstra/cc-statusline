@@ -163,6 +163,7 @@ function authRecoveryDeps(
     isInteractive: true,
     discoverImpl: discoverImpl as InitDeps['discoverImpl'],
     spawnClaude,
+    stdinReader: vi.fn().mockResolvedValue('y'),
   });
   return {
     deps,
@@ -171,39 +172,28 @@ function authRecoveryDeps(
   };
 }
 
-describe('plan selection and Pro installation', () => {
+describe('legacy --plan flag', () => {
   it.each([
-    [['--plan=pro']],
     [['--plan', 'pro']],
-  ])('accepts %j without reading stdin or credentials', async (args) => {
+    [['--plan=max']],
+  ])('ignores %j with a notice and installs render', async (args) => {
     const tmpDir = makeTmpDir();
-    const stdinReader = vi.fn();
-    const discoverImpl = vi.fn();
-    const deps = baseDeps(tmpDir, {
-      stdinReader,
-      isInteractive: true,
+    const discoverImpl = vi.fn().mockResolvedValue(MOCK_CREDENTIALS);
+    const { code, output } = await captureStderr(() => runInit(args, baseDeps(tmpDir, {
       discoverImpl: discoverImpl as InitDeps['discoverImpl'],
-    });
-
-    expect(await runInit(args, deps)).toBe(0);
-    expect(stdinReader).not.toHaveBeenCalled();
-    expect(discoverImpl).not.toHaveBeenCalled();
-    expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
-      .toBe(`${bundlePath(tmpDir)} render --payload-only`);
-    expect(fs.existsSync(cachePath(tmpDir))).toBe(false);
-  });
-
-  it('prints the Pro install message', async () => {
-    const tmpDir = makeTmpDir();
-    const { code, output } = await captureStdout(() => runInit(['--plan=pro'], baseDeps(tmpDir)));
+    })));
 
     expect(code).toBe(0);
-    expect(output).toContain('Pro statusline installed');
+    expect(output).toContain('init: --plan is no longer needed and is ignored\n');
+    expect(discoverImpl).toHaveBeenCalledOnce();
+    expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
+      .toBe(`${bundlePath(tmpDir)} render`);
+    expect(readCache(cachePath(tmpDir))?.credentials.accessToken)
+      .toBe(MOCK_CREDENTIALS.accessToken);
   });
-
 });
 
-describe('plan auto-detection (no --plan)', () => {
+describe('credential detection', () => {
   it('writes the cache and installs render without any prompt when credentials validate', async () => {
     const tmpDir = makeTmpDir();
     const stdinReader = vi.fn();
@@ -322,12 +312,16 @@ describe('plan auto-detection (no --plan)', () => {
       .toBe(MOCK_CREDENTIALS.accessToken);
   });
 
-  it('rewrites a legacy render-enterprise command without a conflict prompt', async () => {
+  it.each([
+    ['render-promax'],
+    ['render-enterprise'],
+    ['render --payload-only'],
+  ])('rewrites a legacy %s command to render without a conflict prompt', async (legacy) => {
     const tmpDir = makeTmpDir();
     writeJson(settingsPath(tmpDir), {
       statusLine: {
         type: 'command',
-        command: `${bundlePath(tmpDir)} render-enterprise`,
+        command: `${bundlePath(tmpDir)} ${legacy}`,
       },
     });
 
@@ -335,34 +329,9 @@ describe('plan auto-detection (no --plan)', () => {
     expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
       .toBe(`${bundlePath(tmpDir)} render`);
   });
-
-  it('rewrites a legacy render-promax command for --plan pro without a conflict prompt', async () => {
-    const tmpDir = makeTmpDir();
-    writeJson(settingsPath(tmpDir), {
-      statusLine: {
-        type: 'command',
-        command: `${bundlePath(tmpDir)} render-promax`,
-      },
-    });
-
-    expect(await runInit(['--plan=pro'], baseDeps(tmpDir))).toBe(0);
-    expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
-      .toBe(`${bundlePath(tmpDir)} render --payload-only`);
-  });
 });
 
 describe('guided Claude Code authentication recovery', () => {
-  it('--plan skips only plan selection and still launches login with an injected TTY', async () => {
-    const tmpDir = makeTmpDir();
-    const { deps, spawnClaude } = authRecoveryDeps(
-      tmpDir,
-      { status: 0, signal: null, stdout: '{"loggedIn":false}' },
-    );
-
-    expect(await runInit(['--plan=enterprise'], deps)).toBe(0);
-    expect(spawnClaude).toHaveBeenCalledTimes(2);
-  });
-
   it.each([
     ['logged out with documented exit 1', { status: 1, signal: null, stdout: '{"loggedIn":false}' }],
     ['logged in', { status: 0, signal: null, stdout: '{"loggedIn":true}' }],
@@ -374,7 +343,7 @@ describe('guided Claude Code authentication recovery', () => {
       const tmpDir = makeTmpDir();
       const { deps, spawnClaude, discoverImpl } = authRecoveryDeps(tmpDir, statusResult);
 
-      expect(await runInit(['--plan=enterprise'], deps)).toBe(0);
+      expect(await runInit([], deps)).toBe(0);
       expect(spawnClaude).toHaveBeenCalledTimes(2);
       expect(spawnClaude.mock.calls.map((call) => call[1])).toEqual([
         ['auth', 'status'],
@@ -391,7 +360,7 @@ describe('guided Claude Code authentication recovery', () => {
       { status: 0, signal: null, stdout: '{"loggedIn":true}' },
     );
 
-    expect(await runInit(['--plan', 'enterprise'], deps)).toBe(0);
+    expect(await runInit([], deps)).toBe(0);
 
     const statusCall = spawnClaude.mock.calls[0];
     const loginCall = spawnClaude.mock.calls[1];
@@ -422,7 +391,7 @@ describe('guided Claude Code authentication recovery', () => {
     );
     deps.fetchImpl = fetchImpl;
 
-    expect(await runInit(['--plan=enterprise'], deps)).toBe(0);
+    expect(await runInit([], deps)).toBe(0);
     expect(discoverImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(spawnClaude).toHaveBeenCalledTimes(2);
@@ -443,10 +412,11 @@ describe('guided Claude Code authentication recovery', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(MOCK_USAGE), { status: 200 }))
     ) as unknown as typeof fetch;
 
-    expect(await runInit(['--plan=enterprise'], baseDeps(tmpDir, {
+    expect(await runInit([], baseDeps(tmpDir, {
       isInteractive: true,
       discoverImpl: discoverImpl as InitDeps['discoverImpl'],
       spawnClaude,
+      stdinReader: vi.fn().mockResolvedValue('y'),
       fetchImpl,
     }))).toBe(0);
     expect(discoverImpl).toHaveBeenCalledTimes(2);
@@ -477,10 +447,11 @@ describe('guided Claude Code authentication recovery', () => {
       .mockReturnValueOnce(NOW + 2_000);
     const fetchImpl = makeFetch();
 
-    expect(await runInit(['--plan=enterprise'], baseDeps(tmpDir, {
+    expect(await runInit([], baseDeps(tmpDir, {
       isInteractive: true,
       discoverImpl: discoverImpl as InitDeps['discoverImpl'],
       spawnClaude,
+      stdinReader: vi.fn().mockResolvedValue('y'),
       now,
       fetchImpl,
     }))).toBe(0);
@@ -504,7 +475,7 @@ describe('guided Claude Code authentication recovery', () => {
     expect(fs.readFileSync(cachePath(tmpDir), 'utf8')).not.toContain('refreshToken');
   });
 
-  it('does not launch login when initial discovery fails for a reason other than missing credentials', async () => {
+  it('installs without login or cache changes when discovery fails for a reason other than missing credentials', async () => {
     const tmpDir = makeTmpDir();
     await writeCache(makeCache(), cachePath(tmpDir));
     const before = fileHash(cachePath(tmpDir));
@@ -512,14 +483,14 @@ describe('guided Claude Code authentication recovery', () => {
     const discoverImpl = vi.fn().mockRejectedValue(new Error(rawError));
     const spawnClaude = vi.fn();
     const { code, output } = await captureStderr(() =>
-      runInit(['--plan=enterprise', '--force'], baseDeps(tmpDir, {
+      runInit(['--force'], baseDeps(tmpDir, {
         isInteractive: true,
         discoverImpl: discoverImpl as InitDeps['discoverImpl'],
         spawnClaude,
       })),
     );
 
-    expect(code).toBe(3);
+    expect(code).toBe(0);
     expect(output).toBe('init: could not read Claude Code credentials.\n');
     expect(output).not.toContain(rawError);
     expect(spawnClaude).not.toHaveBeenCalled();
@@ -531,14 +502,14 @@ describe('guided Claude Code authentication recovery', () => {
     const discoverImpl = vi.fn().mockRejectedValue(new InvalidEnvelopeError('refreshToken'));
     const spawnClaude = vi.fn();
     const { code, output } = await captureStderr(() =>
-      runInit(['--plan=enterprise', '--force'], baseDeps(tmpDir, {
+      runInit(['--force'], baseDeps(tmpDir, {
         isInteractive: true,
         discoverImpl: discoverImpl as InitDeps['discoverImpl'],
         spawnClaude,
       })),
     );
 
-    expect(code).toBe(3);
+    expect(code).toBe(0);
     expect(output).toBe(
       'init: could not read Claude Code credentials: ' +
       'the macOS keychain item "Claude Code-credentials" is missing or has an invalid refreshToken field.\n',
@@ -558,52 +529,13 @@ describe('guided Claude Code authentication recovery', () => {
       new CredentialFileError(`Credential file ${filePath} is unreadable`, filePath, reason, field),
     );
     const { code, output } = await captureStderr(() =>
-      runInit(['--plan=enterprise', '--non-interactive'], baseDeps(tmpDir, {
+      runInit(['--non-interactive'], baseDeps(tmpDir, {
         discoverImpl: discoverImpl as InitDeps['discoverImpl'],
       })),
     );
 
-    expect(code).toBe(3);
+    expect(code).toBe(0);
     expect(output).toBe(`init: could not read Claude Code credentials: ${filePath} ${expected}.\n`);
-  });
-
-  it('prints --plan max in the manual login instructions for a Max install', async () => {
-    const tmpDir = makeTmpDir();
-    const discoverImpl = vi.fn().mockRejectedValue(
-      new CredentialNotFoundError(['/mock/credentials.json']),
-    );
-    const { code, output } = await captureStderr(() =>
-      runInit(['--plan=max', '--non-interactive'], baseDeps(tmpDir, {
-        discoverImpl: discoverImpl as InitDeps['discoverImpl'],
-      })),
-    );
-
-    expect(code).toBe(2);
-    expect(output.split('\n')).toContain('claude auth login');
-    expect(output.split('\n')).toContain('npx @nkootstra/cc-statusline --plan max');
-  });
-
-  it.each([
-    ['explicit non-interactive mode', ['--plan=enterprise', '--non-interactive'], true],
-    ['no TTY', ['--plan=enterprise'], false],
-  ])('prints manual commands and runs no Claude commands for %s', async (_label, args, interactive) => {
-    const tmpDir = makeTmpDir();
-    const discoverImpl = vi.fn().mockRejectedValue(
-      new CredentialNotFoundError(['/mock/credentials.json']),
-    );
-    const spawnClaude = vi.fn();
-    const { code, output } = await captureStderr(() =>
-      runInit(args, baseDeps(tmpDir, {
-        isInteractive: interactive,
-        discoverImpl: discoverImpl as InitDeps['discoverImpl'],
-        spawnClaude,
-      })),
-    );
-
-    expect(code).toBe(2);
-    expect(output.split('\n')).toContain('claude auth login');
-    expect(output.split('\n')).toContain('npx @nkootstra/cc-statusline --plan enterprise');
-    expect(spawnClaude).not.toHaveBeenCalled();
   });
 
   it('returns 130 when login is interrupted by SIGINT', async () => {
@@ -617,7 +549,7 @@ describe('guided Claude Code authentication recovery', () => {
       { status: null, signal: 'SIGINT' },
     );
 
-    expect(await runInit(['--plan=enterprise', '--force'], deps)).toBe(130);
+    expect(await runInit(['--force'], deps)).toBe(130);
     expect(spawnClaude).toHaveBeenCalledTimes(2);
     expect(discoverImpl).toHaveBeenCalledOnce();
     expect(fileHash(cachePath(tmpDir))).toBe(before);
@@ -639,7 +571,7 @@ describe('guided Claude Code authentication recovery', () => {
         loginResult,
       );
 
-      expect(await runInit(['--plan=enterprise', '--force'], deps)).toBe(3);
+      expect(await runInit(['--force'], deps)).toBe(3);
       expect(spawnClaude).toHaveBeenCalledTimes(2);
       expect(discoverImpl).toHaveBeenCalledOnce();
       expect(fileHash(cachePath(tmpDir))).toBe(before);
@@ -656,7 +588,7 @@ describe('guided Claude Code authentication recovery', () => {
     );
     deps.fetchImpl = makeFetch(401);
 
-    expect(await runInit(['--plan=enterprise', '--force'], deps)).toBe(3);
+    expect(await runInit(['--force'], deps)).toBe(3);
     expect(spawnClaude).toHaveBeenCalledTimes(2);
     expect(fileHash(cachePath(tmpDir))).toBe(before);
   });
@@ -687,10 +619,11 @@ describe('guided Claude Code authentication recovery', () => {
         ? { status: 1, signal: null, stdout: '{"loggedIn":false}' }
         : { status: 0, signal: null });
       const { code, output } = await captureStderr(() =>
-        runInit(['--plan=enterprise', '--force'], baseDeps(tmpDir, {
+        runInit(['--force'], baseDeps(tmpDir, {
           isInteractive: true,
           discoverImpl: discoverImpl as InitDeps['discoverImpl'],
           spawnClaude,
+          stdinReader: vi.fn().mockResolvedValue('y'),
         })),
       );
 
@@ -714,7 +647,7 @@ describe('credential validation and cache persistence', () => {
     const spawnClaude = vi.fn();
     const fetchImpl = makeFetch();
 
-    expect(await runInit(['--plan=enterprise'], baseDeps(tmpDir, {
+    expect(await runInit([], baseDeps(tmpDir, {
       discoverImpl: discoverImpl as InitDeps['discoverImpl'],
       spawnClaude,
       fetchImpl,
@@ -730,7 +663,7 @@ describe('credential validation and cache persistence', () => {
     const spawnClaude = vi.fn();
     const fetchImpl = makeFetch();
 
-    expect(await runInit(['--plan=enterprise'], baseDeps(tmpDir, {
+    expect(await runInit([], baseDeps(tmpDir, {
       discoverImpl: discoverImpl as InitDeps['discoverImpl'],
       spawnClaude,
       fetchImpl,
@@ -769,7 +702,6 @@ describe('credential validation and cache persistence', () => {
     const fetchImpl = makeFetch();
 
     expect(await runInit([
-      '--plan=enterprise',
       `--credentials-path=${credentialsFile}`,
     ], baseDeps(tmpDir, {
       discoverImpl: discoverImpl as InitDeps['discoverImpl'],
@@ -807,7 +739,6 @@ describe('credential validation and cache persistence', () => {
       : makeFetch(typeof outcome === 'number' ? outcome : 200);
 
     expect(await runInit([
-      '--plan=enterprise',
       `--credentials-path=${credentialsFile}`,
     ], baseDeps(tmpDir, { spawnClaude, fetchImpl }))).toBe(expectedCode);
     expect(spawnClaude).not.toHaveBeenCalled();
@@ -815,17 +746,17 @@ describe('credential validation and cache persistence', () => {
   });
 
   it.each([403, 429, 500])(
-    'treats automatic usage %i as network failure without launching login',
+    'installs without login or cache changes when automatic usage returns %i',
     async (status) => {
       const tmpDir = makeTmpDir();
       await writeCache(makeCache(), cachePath(tmpDir));
       const before = fileHash(cachePath(tmpDir));
       const spawnClaude = vi.fn();
 
-      expect(await runInit(['--plan=enterprise', '--force'], baseDeps(tmpDir, {
+      expect(await runInit(['--force'], baseDeps(tmpDir, {
         fetchImpl: makeFetch(status),
         spawnClaude,
-      }))).toBe(4);
+      }))).toBe(0);
       expect(spawnClaude).not.toHaveBeenCalled();
       expect(fileHash(cachePath(tmpDir))).toBe(before);
     },
@@ -841,13 +772,13 @@ describe('credential validation and cache persistence', () => {
     ) as unknown as typeof fetch;
 
     const { code, output } = await captureStderr(() =>
-      runInit(['--plan=enterprise', '--force'], baseDeps(tmpDir, {
+      runInit(['--force'], baseDeps(tmpDir, {
         fetchImpl,
         spawnClaude,
       })),
     );
 
-    expect(code).toBe(4);
+    expect(code).toBe(0);
     expect(output).toBe(
       'init: the usage API returned an unusable response (status 200: Invalid response from usage endpoint: unparseable body); retry later.\n',
     );
@@ -865,10 +796,10 @@ describe('credential validation and cache persistence', () => {
     ) as unknown as typeof fetch;
 
     const { code, output } = await captureStderr(() =>
-      runInit(['--plan=enterprise', '--force'], baseDeps(tmpDir, { fetchImpl })),
+      runInit(['--force'], baseDeps(tmpDir, { fetchImpl })),
     );
 
-    expect(code).toBe(4);
+    expect(code).toBe(0);
     expect(output).toBe(
       'init: the usage API returned an unusable response (status 200: Invalid response from usage endpoint: extra_usage); retry later.\n',
     );
@@ -881,10 +812,10 @@ describe('credential validation and cache persistence', () => {
     );
 
     const { code, output } = await captureStderr(() =>
-      runInit(['--plan=enterprise', '--force'], baseDeps(tmpDir, { fetchImpl })),
+      runInit(['--force'], baseDeps(tmpDir, { fetchImpl })),
     );
 
-    expect(code).toBe(4);
+    expect(code).toBe(0);
     expect(output).toBe(
       'init: could not contact the usage API (connect failed for <redacted>); retry later.\n',
     );
@@ -908,7 +839,7 @@ describe('settings, platform, and installer regressions', () => {
     expect(fs.existsSync(bundlePath(tmpDir))).toBe(false);
   });
 
-  it('does not activate Enterprise installation when authentication fails', async () => {
+  it('does not install when login fails', async () => {
     const tmpDir = makeTmpDir();
     writeJson(settingsPath(tmpDir), {
       statusLine: { type: 'command', command: '/other/statusline' },
@@ -923,7 +854,7 @@ describe('settings, platform, and installer regressions', () => {
       { status: 1, signal: null },
     );
 
-    expect(await runInit(['--plan=enterprise', '--force'], deps)).toBe(3);
+    expect(await runInit(['--force'], deps)).toBe(3);
     expect(fileHash(settingsPath(tmpDir))).toBe(settingsBefore);
     expect(fileHash(bundlePath(tmpDir))).toBe(bundleBefore);
     expect(fs.existsSync(cachePath(tmpDir))).toBe(false);
@@ -935,29 +866,29 @@ describe('settings, platform, and installer regressions', () => {
       statusLine: { type: 'command', command: '/other/statusline' },
     });
 
-    expect(await runInit(['--plan=pro'], baseDeps(tmpDir))).toBe(2);
+    expect(await runInit([], baseDeps(tmpDir))).toBe(2);
     expect(readSettings(settingsPath(tmpDir)).statusLine?.command).toBe('/other/statusline');
-    expect(await runInit(['--plan=pro', '--force'], baseDeps(tmpDir))).toBe(0);
+    expect(await runInit(['--force'], baseDeps(tmpDir))).toBe(0);
     expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
-      .toBe(`${bundlePath(tmpDir)} render --payload-only`);
+      .toBe(`${bundlePath(tmpDir)} render`);
   });
 
   it('emits an absolute node command on Windows', async () => {
     const windowsDir = makeTmpDir();
-    expect(await runInit(['--plan=pro'], baseDeps(windowsDir, {
+    expect(await runInit([], baseDeps(windowsDir, {
       platformOverride: 'win32',
     }))).toBe(0);
     const windowsCommand = readSettings(settingsPath(windowsDir)).statusLine?.command;
     const windowsBundlePath = bundlePath(windowsDir);
     expect(path.isAbsolute(windowsBundlePath)).toBe(true);
-    expect(windowsCommand).toBe(`node ${windowsBundlePath} render --payload-only`);
+    expect(windowsCommand).toBe(`node ${windowsBundlePath} render`);
   });
 
   it.runIf(process.platform !== 'win32')('makes POSIX bundles executable', async () => {
     const posixDir = makeTmpDir();
-    expect(await runInit(['--plan=pro'], baseDeps(posixDir))).toBe(0);
+    expect(await runInit([], baseDeps(posixDir))).toBe(0);
     expect(readSettings(settingsPath(posixDir)).statusLine?.command)
-      .toBe(`${bundlePath(posixDir)} render --payload-only`);
+      .toBe(`${bundlePath(posixDir)} render`);
     expect(fs.statSync(bundlePath(posixDir)).mode & 0o777).toBe(0o755);
   });
 
@@ -966,63 +897,37 @@ describe('settings, platform, and installer regressions', () => {
     const source = makeFakeBundle(tmpDir, 'first\n');
     const deps = baseDeps(tmpDir, { bundlePathOverride: source });
 
-    expect(await runInit(['--plan=pro'], deps)).toBe(0);
+    expect(await runInit([], deps)).toBe(0);
     fs.writeFileSync(source, 'second\n', 'utf8');
-    const { code, output } = await captureStdout(() => runInit(['--plan=pro'], deps));
+    const { code, output } = await captureStdout(() => runInit([], deps));
     expect(code).toBe(0);
     expect(fs.readFileSync(bundlePath(tmpDir), 'utf8')).toBe('second\n');
     expect(output).toMatch(/installed cc-statusline v1\.2\.3/);
   });
 
-  it('installs the usage-API renderer and validates credentials for --plan max', async () => {
-    const tmpDir = makeTmpDir();
-    const stdinReader = vi.fn();
-    const fetchImpl = makeFetch();
-    const discoverImpl = vi.fn().mockResolvedValue(MOCK_CREDENTIALS);
-    const deps = baseDeps(tmpDir, {
-      stdinReader,
-      isInteractive: true,
-      fetchImpl,
-      discoverImpl: discoverImpl as InitDeps['discoverImpl'],
-    });
-
-    expect(await runInit(['--plan', 'max'], deps)).toBe(0);
-    expect(stdinReader).not.toHaveBeenCalled();
-    expect(discoverImpl).toHaveBeenCalledOnce();
-    expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
-      .toBe(`${bundlePath(tmpDir)} render`);
-    expect(readCache(cachePath(tmpDir))).toMatchObject({
-      credentialSource: { kind: 'claude-code' },
-    });
-  });
-
-  it('names the Max plan in the install and cache-reuse messages', async () => {
+  it('prints the install and cache-reuse messages', async () => {
     const tmpDir = makeTmpDir();
     const deps = baseDeps(tmpDir);
 
-    const first = await captureStdout(() => runInit(['--plan=max'], deps));
+    const first = await captureStdout(() => runInit([], deps));
     expect(first.code).toBe(0);
-    expect(first.output).toContain('Max statusline installed');
-    expect(first.output).not.toContain('Pro/Max');
-    expect(first.output).not.toContain('Enterprise');
+    expect(first.output).toContain('Usage-aware statusline installed');
 
-    const second = await captureStdout(() => runInit(['--plan=max'], deps));
+    const second = await captureStdout(() => runInit([], deps));
     expect(second.code).toBe(0);
-    expect(second.output).toContain('Max statusline is already installed with valid credentials');
-    expect(second.output).not.toContain('Enterprise');
+    expect(second.output).toContain('Usage-aware statusline is already installed with valid credentials');
   });
 
-  it('prints the macOS keychain note only for automatic Enterprise discovery', async () => {
+  it('prints the macOS keychain note only for automatic discovery', async () => {
     const macDir = makeTmpDir();
     const { output: macOutput } = await captureStdout(() =>
-      runInit(['--plan=enterprise'], baseDeps(macDir, { platformOverride: 'darwin' })),
+      runInit([], baseDeps(macDir, { platformOverride: 'darwin' })),
     );
     expect(macOutput).toContain('Always Allow');
 
     const linuxDir = makeTmpDir();
     const { output: linuxOutput } = await captureStdout(() =>
-      runInit(['--plan=enterprise'], baseDeps(linuxDir)),
+      runInit([], baseDeps(linuxDir)),
     );
     expect(linuxOutput).not.toContain('Always Allow');
   });
@@ -1041,7 +946,6 @@ describe('explicit credential path security', () => {
 
     const { code, output } = await captureStderr(() =>
       runInit([
-        '--plan=enterprise',
         `--credentials-path=${credentialsFile}`,
       ], baseDeps(home)),
     );
@@ -1064,7 +968,6 @@ describe('explicit credential path security', () => {
 
     const { code, output } = await captureStderr(() =>
       runInit([
-        '--plan=enterprise',
         `--credentials-path=${credentialsFile}`,
       ], baseDeps(home)),
     );
@@ -1086,7 +989,6 @@ describe('explicit credential path security', () => {
 
     const { code, output } = await captureStderr(() =>
       runInit([
-        '--plan=enterprise',
         `--credentials-path=${credentialsFile}`,
       ], baseDeps(home)),
     );
@@ -1104,7 +1006,6 @@ describe('explicit credential path security', () => {
 
     const { code } = await captureStderr(() =>
       runInit([
-        '--plan=enterprise',
         `--credentials-path=${symlink}`,
       ], baseDeps(home)),
     );
@@ -1118,7 +1019,6 @@ describe('explicit credential path security', () => {
 
     const { code, output } = await captureStderr(() =>
       runInit([
-        '--plan=enterprise',
         `--credentials-path=${directory}`,
       ], baseDeps(home)),
     );

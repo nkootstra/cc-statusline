@@ -102,7 +102,7 @@ function writeDiagnosticLogs(dir: string): void {
   fs.writeFileSync(`${getDiagnosticLogPath(dir)}.1`, '{"event":"old"}\n', { mode: 0o600 });
 }
 
-const COMMAND = '/home/user/.claude/cc-statusline/cc-statusline.js render-promax';
+const COMMAND = '/home/user/.claude/cc-statusline/cc-statusline.js render';
 
 // Capture stdout during a call
 async function captureStdout(fn: () => Promise<number>): Promise<{ code: number; output: string }> {

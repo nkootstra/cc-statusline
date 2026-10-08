@@ -21,8 +21,8 @@ src/
   credentials/    OAuth credential discovery and source rereading
   oauth/          usage API client
   settings/       ~/.claude/settings.json mutator
-  statusline/     output formatter + stdin reader for Claude Code
-  subcommands/    init, uninstall, refresh, render (render-promax and render-enterprise hold its row builders)
+  statusline/     stdin reader, formatting, and the identity, subscription, and cached-usage rows
+  subcommands/    init, uninstall, refresh, doctor, render (plus its background-refresh launcher)
 tests/
   fixtures/       static test inputs
 ```

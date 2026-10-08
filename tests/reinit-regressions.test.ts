@@ -7,7 +7,7 @@ import type { OAuthCredentials } from '../src/credentials/envelope';
 import type { UsageResponse } from '../src/oauth/types';
 import { runRefresh, type RefreshDeps } from '../src/subcommands/refresh';
 import { runInit, type InitDeps } from '../src/subcommands/init';
-import { captureStdout } from './support/render-enterprise';
+import { captureStdout } from './support/render';
 
 const NOW = Date.parse('2026-07-28T12:00:00Z');
 
@@ -157,7 +157,7 @@ describe('init: cache reuse requires a healthy refresh loop', () => {
       nextRefreshAllowedAt: NOW + 30_000,
     }), deps.cachePath!);
 
-    const { output } = await captureStdout(() => runInit(['--plan=enterprise'], deps));
+    const { output } = await captureStdout(() => runInit([], deps));
 
     expect(deps.fetchImpl).toHaveBeenCalledOnce();
     expect(output).not.toContain('already installed');
@@ -169,7 +169,7 @@ describe('init: cache reuse requires a healthy refresh loop', () => {
     const deps = initDeps(dir);
     await writeCache(makeCache({ rateLimitedUntilMs: NOW + 86_400_000 }), deps.cachePath!);
 
-    const { output } = await captureStdout(() => runInit(['--plan=enterprise'], deps));
+    const { output } = await captureStdout(() => runInit([], deps));
 
     expect(deps.fetchImpl).toHaveBeenCalledOnce();
     expect(output).not.toContain('already installed');
@@ -181,7 +181,7 @@ describe('init: cache reuse requires a healthy refresh loop', () => {
     const deps = initDeps(dir);
     await writeCache(makeCache(), deps.cachePath!);
 
-    const { output } = await captureStdout(() => runInit(['--plan=enterprise'], deps));
+    const { output } = await captureStdout(() => runInit([], deps));
 
     expect(deps.fetchImpl).not.toHaveBeenCalled();
     expect(output).toContain('already installed');

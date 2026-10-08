@@ -47,7 +47,7 @@ function fileHash(filePath: string): string {
   return createHash('sha256').update(buf).digest('hex');
 }
 
-const COMMAND = '/home/user/.claude/cc-statusline/cc-statusline.js render-promax';
+const COMMAND = '/home/user/.claude/cc-statusline/cc-statusline.js render';
 const OTHER_COMMAND = '~/.local/bin/some-other-tool';
 
 // ---------------------------------------------------------------------------

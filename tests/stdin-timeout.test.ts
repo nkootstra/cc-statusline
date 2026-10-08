@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Readable } from 'node:stream';
-import { runRender, runRenderEnterprise, runRenderPromax } from '../src/subcommands/render';
-import { captureStdout } from './support/render-enterprise';
+import { runRender } from '../src/subcommands/render';
+import { captureStdout } from './support/render';
 
 function neverEndingStream(): Readable {
   return new Readable({ read() {} });
@@ -16,32 +16,10 @@ afterEach(() => {
 });
 
 describe('stdin that never closes', () => {
-  it('render-promax prints a blank line and releases the stream', async () => {
-    const stream = neverEndingStream();
-    const pending = captureStdout(() => runRenderPromax([], stream));
-    await vi.advanceTimersByTimeAsync(1_000);
-    const { output } = await pending;
-
-    expect(output).toBe('\n');
-    expect(stream.destroyed).toBe(true);
-  });
-
-  it('render-enterprise prints a blank line and releases the stream', async () => {
-    const stream = neverEndingStream();
-    const pending = captureStdout(() =>
-      runRenderEnterprise([], stream, { cachePath: '/nonexistent/cache.json', spawnRefresh: () => {} }),
-    );
-    await vi.advanceTimersByTimeAsync(1_000);
-    const { output } = await pending;
-
-    expect(output).toBe('\n');
-    expect(stream.destroyed).toBe(true);
-  });
-
   it('render prints a blank line and releases the stream', async () => {
     const stream = neverEndingStream();
     const pending = captureStdout(() =>
-      runRender([], stream, { cachePath: '/nonexistent/cache.json', spawnRefresh: () => {} }),
+      runRender(stream, { cachePath: '/nonexistent/cache.json', spawnRefresh: () => {} }),
     );
     await vi.advanceTimersByTimeAsync(1_000);
     const { output } = await pending;

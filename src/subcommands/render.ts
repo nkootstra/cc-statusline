@@ -1,30 +1,15 @@
 import { parseStdin, readStdin, type StatuslineInput } from '../statusline/stdin';
-import {
-  SEP,
-  STALE_MARKER,
-  applyDim,
-} from '../statusline/format';
-import { readCache, defaultCachePath, type Cache } from '../cache/store';
-import type { UsageResponse } from '../oauth/types';
-import { modelScopedWindows } from '../oauth/usage';
-import { buildModelScopedSegments } from '../statusline/model-scoped';
+import { readCache, defaultCachePath } from '../cache/store';
 import { isGatewayMode } from '../statusline/gateway';
+import { buildIdentityRow } from '../statusline/identity-row';
+import { buildSubscriptionUsageRow, hasCachedWindows } from '../statusline/subscription-row';
+import { buildCachedUsageRow } from '../statusline/cached-usage-row';
+import { getStaleThresholdMs } from '../statusline/usage-status';
 import {
-  buildCostSegment,
-  buildIdentityRow,
-  buildPayloadUsageRow,
-  buildPayloadWindowSegments,
-} from './render-promax';
-import {
-  buildAuthHint,
-  buildCacheUsageRow,
   defaultSpawnFn,
-  getStaleThresholdMs,
-  hasCreditUsage,
-  isCacheStale,
   startBackgroundRefresh,
   type SpawnFn,
-} from './render-enterprise';
+} from './background-refresh';
 
 // A credits-only cache next to a subscription payload most likely belongs to
 // the account the user just switched away from. Refresh it well before the
@@ -45,65 +30,9 @@ function hasPayloadWindows(input: StatuslineInput): boolean {
     input.rate_limits?.seven_day !== undefined;
 }
 
-export function hasCachedWindows(usage: UsageResponse): boolean {
-  return (usage.five_hour !== null && usage.five_hour !== undefined) ||
-    (usage.seven_day !== null && usage.seven_day !== undefined);
-}
-
-function buildExtraSpendSegment(usage: UsageResponse): string {
-  const extra = usage.extra_usage;
-  if (extra?.is_enabled !== true || !hasCreditUsage(extra)) return '';
-  const usedDisplay = (extra.used_credits / 100).toFixed(2);
-  const limitDisplay = (extra.monthly_limit / 100).toFixed(2);
-  return `extra $${usedDisplay} / $${limitDisplay}`;
-}
-
-function buildSubscriptionUsageRow(
-  input: StatuslineInput,
-  cache: Cache | null,
-  usage: UsageResponse | null,
-  nowMs: number,
-  staleThresholdMs: number,
-): string {
-  const windows = buildPayloadWindowSegments(input);
-
-  let cachedSegs: string[] = [];
-  if (usage !== null) {
-    cachedSegs = [
-      ...(windows.modelScoped === undefined
-        ? buildModelScopedSegments(modelScopedWindows(usage), {
-          now: nowMs,
-          sharedResetHint: windows.sevenDayHint,
-        })
-        : []),
-      buildExtraSpendSegment(usage),
-    ].filter(Boolean);
-  }
-
-  let cachedText = cachedSegs.join(SEP);
-  if (cachedText !== '') {
-    if (isCacheStale(cache, nowMs, staleThresholdMs)) {
-      cachedText = applyDim(cachedText) + STALE_MARKER;
-    } else if (cache?.authState === 'fatal') {
-      cachedText = applyDim(cachedText);
-    }
-  }
-
-  return [
-    windows.fiveHour,
-    windows.sevenDay,
-    ...(windows.modelScoped ?? []),
-    cachedText,
-    buildCostSegment(input.cost.total_cost_usd),
-  ].filter(Boolean).join(SEP) + buildAuthHint(cache, nowMs);
-}
-
-function joinRows(identityRow: string, usageRow: string): string {
-  return identityRow + '\n' + usageRow + '\n';
-}
-
+// Takes no arguments: settings written by older installs may still pass
+// `--payload-only`, and that line must keep rendering.
 export async function runRender(
-  args: string[] = [],
   stdinSource: NodeJS.ReadableStream = process.stdin,
   deps: RenderDeps = {},
 ): Promise<number> {
@@ -120,11 +49,6 @@ export async function runRender(
   // credentials the refresh needs may not exist at all.
   if (isGatewayMode(deps.env ?? process.env)) {
     process.stdout.write(identityRow + '\n');
-    return 0;
-  }
-
-  if (args.includes('--payload-only')) {
-    process.stdout.write(joinRows(identityRow, buildPayloadUsageRow(input)));
     return 0;
   }
 
@@ -149,12 +73,12 @@ export async function runRender(
       staleThresholdMs,
     );
   } else {
-    usageRow = buildCacheUsageRow(cache, nowMs, staleThresholdMs, input.cost.total_cost_usd);
+    usageRow = buildCachedUsageRow(cache, nowMs, staleThresholdMs, input.cost.total_cost_usd);
   }
 
   // Print before touching the lock so concurrent sessions never wait on
   // each other to show a line; the refresh claim is a side effect.
-  process.stdout.write(joinRows(identityRow, usageRow));
+  process.stdout.write(identityRow + '\n' + usageRow + '\n');
 
   await startBackgroundRefresh({
     cache,
@@ -165,20 +89,4 @@ export async function runRender(
     staleThresholdMs: refreshThresholdMs,
   });
   return 0;
-}
-
-export function runRenderPromax(
-  args: string[] = [],
-  stdinSource: NodeJS.ReadableStream = process.stdin,
-  deps: RenderDeps = {},
-): Promise<number> {
-  return runRender(['--payload-only', ...args], stdinSource, deps);
-}
-
-export function runRenderEnterprise(
-  args: string[] = [],
-  stdinSource: NodeJS.ReadableStream = process.stdin,
-  deps: RenderDeps = {},
-): Promise<number> {
-  return runRender(args, stdinSource, deps);
 }

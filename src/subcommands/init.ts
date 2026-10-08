@@ -12,14 +12,9 @@ import {
 } from '../settings/mutator';
 import { discover } from '../credentials/discover';
 import { writeCache, defaultCachePath } from '../cache/store';
-import {
-  prepareEnterprise,
-  printEnterpriseSuccess,
-  type SpawnClaude,
-  type UsageApiPlan,
-} from './init-enterprise';
+import { prepareCredentials, type SpawnClaude } from './init-credentials';
 
-export type { SpawnClaudeResult } from './init-enterprise';
+export type { SpawnClaudeResult } from './init-credentials';
 
 const PKG_VERSION: string = ((): string => {
   try {
@@ -31,27 +26,13 @@ const PKG_VERSION: string = ((): string => {
   }
 })();
 
-export type PlanTier = 'pro' | 'max' | 'enterprise';
-
-const PLAN_LABELS: Record<PlanTier, string> = {
-  pro: 'Pro',
-  max: 'Max',
-  enterprise: 'Enterprise',
-};
-
+// Commands earlier versions wrote; init replaces them without a conflict prompt.
 const RENDER_SUBCOMMANDS = [
   'render',
   'render --payload-only',
   'render-promax',
   'render-enterprise',
 ] as const;
-
-// Claude Code's statusline payload carries no per-model weekly windows, so
-// every plan but an explicit Pro reads the usage API too, as Enterprise does.
-function usageApiPlan(tier: PlanTier | undefined): UsageApiPlan | 'auto' | null {
-  if (tier === undefined) return 'auto';
-  return tier === 'pro' ? null : tier;
-}
 
 export interface InitDeps {
   homedirOverride?: string;
@@ -95,15 +76,6 @@ function commandFor(
   return platform === 'win32'
     ? `node ${bundlePath} ${subcommand}`
     : `${bundlePath} ${subcommand}`;
-}
-
-function buildCommand(
-  installDir: string,
-  tier: PlanTier | undefined,
-  platform: NodeJS.Platform,
-): string {
-  const subcommand = usageApiPlan(tier) === null ? 'render --payload-only' : 'render';
-  return commandFor(installDir, subcommand, platform);
 }
 
 async function readSingleKeystroke(): Promise<string> {
@@ -172,31 +144,16 @@ async function prepareSettings(
 }
 
 export async function runInit(args: string[], deps: InitDeps = {}): Promise<number> {
-  let planFlag: PlanTier | undefined;
   let credentialsPathFlag: string | undefined;
   let forceFlag = false;
   let nonInteractiveFlag = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
-    if (arg.startsWith('--plan=')) {
-      const value = arg.slice('--plan='.length).toLowerCase();
-      if (value !== 'pro' && value !== 'max' && value !== 'enterprise') {
-        process.stderr.write(
-          `init: unknown plan "${value}"; expected pro, max, or enterprise\n`,
-        );
-        return 1;
-      }
-      planFlag = value;
-    } else if (arg === '--plan') {
-      const value = args[++i]?.toLowerCase();
-      if (value !== 'pro' && value !== 'max' && value !== 'enterprise') {
-        process.stderr.write(
-          `init: unknown plan "${value ?? ''}"; expected pro, max, or enterprise\n`,
-        );
-        return 1;
-      }
-      planFlag = value;
+    // Older instructions still pass --plan; the layout is now detected.
+    if (arg === '--plan' || arg.startsWith('--plan=')) {
+      if (arg === '--plan') i++;
+      process.stderr.write('init: --plan is no longer needed and is ignored\n');
     } else if (arg.startsWith('--credentials-path=')) {
       credentialsPathFlag = arg.slice('--credentials-path='.length);
     } else if (arg === '--force') {
@@ -224,10 +181,9 @@ export async function runInit(args: string[], deps: InitDeps = {}): Promise<numb
       (process.stdin.isTTY === true && process.stdout.isTTY === true));
   const stdinReader = deps.stdinReader ?? readSingleKeystroke;
 
-  const tier = planFlag;
   const installDir = getInstallDir(deps.homedirOverride);
   const destinationPath = getBundleDestPath(deps.homedirOverride);
-  const command = buildCommand(installDir, tier, platform);
+  const command = commandFor(installDir, 'render', platform);
   const settings = readSettings(settingsFilePath);
   const settingsPreparation = await prepareSettings(
     settings,
@@ -239,29 +195,25 @@ export async function runInit(args: string[], deps: InitDeps = {}): Promise<numb
   );
   if (settingsPreparation.kind === 'exit') return settingsPreparation.code;
 
-  const apiPlan = usageApiPlan(tier);
-  const enterprisePreparation = apiPlan === null
-    ? null
-    : await prepareEnterprise({
-        plan: apiPlan,
-        cachePath: cacheFilePath,
-        credentialsPath: credentialsPathFlag,
-        force: forceFlag,
-        homedir,
-        platform,
-        canInteract,
-        discoverFn,
-        discoverOptions: {
-          homedirOverride: deps.homedirOverride,
-          platformOverride: deps.platformOverride,
-        },
-        spawnClaude,
-        stdinReader,
-        now,
-        fetchImpl: deps.fetchImpl,
-      });
-  if (enterprisePreparation?.kind === 'exit') {
-    return enterprisePreparation.code;
+  const credentialPreparation = await prepareCredentials({
+    cachePath: cacheFilePath,
+    credentialsPath: credentialsPathFlag,
+    force: forceFlag,
+    homedir,
+    platform,
+    canInteract,
+    discoverFn,
+    discoverOptions: {
+      homedirOverride: deps.homedirOverride,
+      platformOverride: deps.platformOverride,
+    },
+    spawnClaude,
+    stdinReader,
+    now,
+    fetchImpl: deps.fetchImpl,
+  });
+  if (credentialPreparation.kind === 'exit') {
+    return credentialPreparation.code;
   }
 
   fs.mkdirSync(installDir, { recursive: true, mode: 0o700 });
@@ -269,12 +221,8 @@ export async function runInit(args: string[], deps: InitDeps = {}): Promise<numb
   if (platform !== 'win32') {
     fs.chmodSync(destinationPath, 0o755);
   }
-  if (
-    enterprisePreparation !== null &&
-    enterprisePreparation.kind === 'ready' &&
-    enterprisePreparation.cache !== null
-  ) {
-    await writeCache(enterprisePreparation.cache, cacheFilePath);
+  if (credentialPreparation.cache !== null) {
+    await writeCache(credentialPreparation.cache, cacheFilePath);
   }
   if (settingsPreparation.shouldWrite) {
     await writeSettings(settingsFilePath, settings);
@@ -284,21 +232,15 @@ export async function runInit(args: string[], deps: InitDeps = {}): Promise<numb
     `installed cc-statusline v${versionString} to ${installDir}/cc-statusline.js\n`,
   );
 
-  if (apiPlan === null) {
+  if (credentialPreparation.reusedExistingCache) {
     process.stdout.write(
-      'Pro statusline installed. Restart Claude Code to see usage in the prompt area.\n' +
-      'If Claude Code shows "statusline skipped", accept workspace trust for this project.\n',
-    );
-    return 0;
-  }
-
-  const label = tier === undefined ? 'Usage-aware' : PLAN_LABELS[tier];
-  if (enterprisePreparation?.reusedExistingCache === true) {
-    process.stdout.write(
-      `${label} statusline is already installed with valid credentials.\n` +
+      'Usage-aware statusline is already installed with valid credentials.\n' +
       'Re-run with --force to re-validate credentials.\n',
     );
   }
-  printEnterpriseSuccess(label);
+  process.stdout.write(
+    'Usage-aware statusline installed. Restart Claude Code to see usage in the prompt area.\n' +
+    'If Claude Code shows "statusline skipped", accept workspace trust for this project.\n',
+  );
   return 0;
 }

@@ -1,69 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { Readable } from 'node:stream';
+import { colorTier } from '../src/statusline/format';
+import { loadFixture, runWithCache, setTTY } from './support/render';
 
-const FIXTURES = resolve(__dirname, 'fixtures');
-
-function loadFixture(name: string): string {
-  return readFileSync(resolve(FIXTURES, name), 'utf8');
-}
-
-function makeStream(content: string): Readable {
-  return Readable.from([content]);
-}
-
-// ---------------------------------------------------------------------------
-// Helpers to capture stdout and manage environment
-// ---------------------------------------------------------------------------
-
-function captureStdout(fn: () => Promise<number>): Promise<{ output: string; exitCode: number }> {
-  return new Promise(async (resolve, reject) => {
-    const chunks: string[] = [];
-    const originalWrite = process.stdout.write.bind(process.stdout);
-
-    // Spy on process.stdout.write
-    const spy = vi
-      .spyOn(process.stdout, 'write')
-      .mockImplementation((chunk: unknown, ...rest: unknown[]) => {
-        if (typeof chunk === 'string') {
-          chunks.push(chunk);
-        } else if (Buffer.isBuffer(chunk)) {
-          chunks.push(chunk.toString('utf8'));
-        }
-        return true;
-      });
-
-    try {
-      const exitCode = await fn();
-      spy.mockRestore();
-      resolve({ output: chunks.join(''), exitCode });
-    } catch (err) {
-      spy.mockRestore();
-      reject(err);
-    }
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Import the function under test — imported after helpers so mocks can be set
-// ---------------------------------------------------------------------------
-
-// We import dynamically inside tests to allow proper module isolation.
-// Since vitest handles this cleanly, we just import at the top.
-import { runRenderPromax } from '../src/subcommands/render';
-import { colorTier, MISSING } from '../src/statusline/format';
-
-// ---------------------------------------------------------------------------
-// Setup/teardown helpers for TTY and NO_COLOR
-// ---------------------------------------------------------------------------
-
-function setTTY(value: boolean | undefined): void {
-  Object.defineProperty(process.stdout, 'isTTY', {
-    value,
-    writable: true,
-    configurable: true,
-  });
+// No cache: the row shows only what Claude Code sends, which is what a
+// subscriber sees before init or without credentials.
+function renderPayload(
+  stdin: string,
+  env: NodeJS.ProcessEnv = {},
+): Promise<{ output: string; exitCode: number }> {
+  return runWithCache(null, stdin, { env });
 }
 
 beforeEach(() => {
@@ -78,15 +23,13 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Scenario 1: Happy path — full Pro/Max stdin fixture
+// Scenario 1: Happy path — full subscription stdin fixture
 // ---------------------------------------------------------------------------
 
-describe('Scenario 1: happy path — full Pro/Max fixture', () => {
+describe('Scenario 1: happy path — full subscription fixture', () => {
   it('renders a single line containing all five segments in order', async () => {
-    const fixtureJson = loadFixture('stdin-promax.json');
-    const { output, exitCode } = await captureStdout(() =>
-      runRenderPromax([], makeStream(fixtureJson)),
-    );
+    const fixtureJson = loadFixture('stdin-subscription.json');
+    const { output, exitCode } = await renderPayload(fixtureJson);
 
     expect(exitCode).toBe(0);
 
@@ -114,18 +57,14 @@ describe('Scenario 1: happy path — full Pro/Max fixture', () => {
   });
 
   it('renders cost as $0.04 (total_cost_usd = 0.042 → fixed 2 decimals)', async () => {
-    const fixtureJson = loadFixture('stdin-promax.json');
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(fixtureJson)),
-    );
+    const fixtureJson = loadFixture('stdin-subscription.json');
+    const { output } = await renderPayload(fixtureJson);
     expect(output).toContain('$0.04');
   });
 
   it('renders ctx with the fixture used_percentage (22%)', async () => {
-    const fixtureJson = loadFixture('stdin-promax.json');
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(fixtureJson)),
-    );
+    const fixtureJson = loadFixture('stdin-subscription.json');
+    const { output } = await renderPayload(fixtureJson);
     expect(output).toContain('22%');
   });
 });
@@ -159,9 +98,7 @@ describe('Scenario 2 (AE4): 5h at 73% renders warn tier', () => {
       },
     });
 
-    const { output, exitCode } = await captureStdout(() =>
-      runRenderPromax([], makeStream(input)),
-    );
+    const { output, exitCode } = await renderPayload(input);
 
     expect(exitCode).toBe(0);
     // With NO_COLOR, output must contain bare text without ANSI escapes
@@ -190,46 +127,11 @@ describe('Scenario 2 (AE4): 5h at 73% renders warn tier', () => {
       },
     });
 
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(input)),
-    );
+    const { output } = await renderPayload(input);
 
     // Yellow ANSI code \x1b[33m should appear (warn tier)
     expect(output).toContain('\x1b[33m');
     expect(output).toContain('73%');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Scenario 3: Missing rate_limits (Enterprise fixture)
-// ---------------------------------------------------------------------------
-
-describe('Scenario 3: missing rate_limits — enterprise fixture', () => {
-  it('output contains "5h —" when rate_limits absent', async () => {
-    const fixtureJson = loadFixture('stdin-enterprise.json');
-    const { output, exitCode } = await captureStdout(() =>
-      runRenderPromax([], makeStream(fixtureJson)),
-    );
-
-    expect(exitCode).toBe(0);
-    expect(output).toContain(`5h ${MISSING}`);
-    expect(output).toContain(`7d ${MISSING}`);
-  });
-
-  it('model name is present', async () => {
-    const fixtureJson = loadFixture('stdin-enterprise.json');
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(fixtureJson)),
-    );
-    expect(output).toContain('claude-opus-4-5');
-  });
-
-  it('omits zero cost', async () => {
-    const fixtureJson = loadFixture('stdin-enterprise.json');
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(fixtureJson)),
-    );
-    expect(output).not.toContain('$0.00');
   });
 });
 
@@ -239,6 +141,7 @@ describe('Scenario 3: missing rate_limits — enterprise fixture', () => {
 
 describe('Scenario 4: zero cost is omitted', () => {
   it('$0.00 does not appear in output when cost is 0', async () => {
+    vi.stubEnv('NO_COLOR', '1');
     const input = JSON.stringify({
       session_id: 'test',
       transcript_path: '/t',
@@ -249,13 +152,13 @@ describe('Scenario 4: zero cost is omitted', () => {
       output_style: { name: 'default' },
       cost: { total_cost_usd: 0, total_duration_ms: 0, total_api_duration_ms: 0, total_lines_added: 0, total_lines_removed: 0 },
       exceeds_200k_tokens: false,
+      rate_limits: { five_hour: { used_percentage: 10, resets_at: Math.floor(Date.now() / 1000) + 3600 } },
     });
 
-    const { output, exitCode } = await captureStdout(() =>
-      runRenderPromax([], makeStream(input)),
-    );
+    const { output, exitCode } = await renderPayload(input);
 
     expect(exitCode).toBe(0);
+    expect(output).toContain('5h 10%');
     expect(output).not.toContain('$0.00');
   });
 });
@@ -266,10 +169,8 @@ describe('Scenario 4: zero cost is omitted', () => {
 
 describe('Scenario 5: null used_percentage is omitted', () => {
   it('omits ctx when context_window.used_percentage is null', async () => {
-    const fixtureJson = loadFixture('stdin-enterprise.json'); // has used_percentage: null
-    const { output, exitCode } = await captureStdout(() =>
-      runRenderPromax([], makeStream(fixtureJson)),
-    );
+    const fixtureJson = loadFixture('stdin-no-rate-limits.json'); // has used_percentage: null
+    const { output, exitCode } = await renderPayload(fixtureJson);
 
     expect(exitCode).toBe(0);
     expect(output).not.toContain('ctx');
@@ -288,9 +189,7 @@ describe('Scenario 5: null used_percentage is omitted', () => {
       exceeds_200k_tokens: false,
     });
 
-    const { output, exitCode } = await captureStdout(() =>
-      runRenderPromax([], makeStream(input)),
-    );
+    const { output, exitCode } = await renderPayload(input);
 
     expect(exitCode).toBe(0);
     expect(output).not.toContain('ctx');
@@ -327,23 +226,17 @@ describe('readability: compact statusline', () => {
   it('omits missing ctx, zero cost, and missing reset hints', async () => {
     vi.stubEnv('NO_COLOR', '1');
 
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(readableInput)),
-    );
+    const { output } = await renderPayload(readableInput);
 
     expect(output).toBe('Sonnet 4.6\n5h 0% [21:00] · 7d 81% [Tue 20:00]\n');
   });
 
   it('emits ANSI colors by default and strips them with NO_COLOR', async () => {
     vi.stubEnv('NO_COLOR', '');
-    const colored = await captureStdout(() =>
-      runRenderPromax([], makeStream(readableInput)),
-    );
+    const colored = await renderPayload(readableInput);
 
     vi.stubEnv('NO_COLOR', '1');
-    const plain = await captureStdout(() =>
-      runRenderPromax([], makeStream(readableInput)),
-    );
+    const plain = await renderPayload(readableInput);
 
     expect(colored.output).toContain('\x1b[32m0%\x1b[0m');
     expect(colored.output).toContain('\x1b[33m81%\x1b[0m');
@@ -364,10 +257,8 @@ describe('Scenario 6: narrow layout at 60 columns', () => {
       configurable: true,
     });
 
-    const fixtureJson = loadFixture('stdin-promax.json');
-    const { output, exitCode } = await captureStdout(() =>
-      runRenderPromax([], makeStream(fixtureJson)),
-    );
+    const fixtureJson = loadFixture('stdin-subscription.json');
+    const { output, exitCode } = await renderPayload(fixtureJson);
 
     // Restore columns
     Object.defineProperty(process.stdout, 'columns', {
@@ -398,10 +289,8 @@ describe('Scenario 7: NO_COLOR=1 — no ANSI escape sequences', () => {
   it('output contains no ANSI codes when NO_COLOR=1', async () => {
     vi.stubEnv('NO_COLOR', '1');
 
-    const fixtureJson = loadFixture('stdin-promax.json');
-    const { output, exitCode } = await captureStdout(() =>
-      runRenderPromax([], makeStream(fixtureJson)),
-    );
+    const fixtureJson = loadFixture('stdin-subscription.json');
+    const { output, exitCode } = await renderPayload(fixtureJson);
 
     expect(exitCode).toBe(0);
     expect(output).not.toMatch(/\x1b\[/);
@@ -410,10 +299,8 @@ describe('Scenario 7: NO_COLOR=1 — no ANSI escape sequences', () => {
   it('output still contains readable segment labels without ANSI', async () => {
     vi.stubEnv('NO_COLOR', '1');
 
-    const fixtureJson = loadFixture('stdin-promax.json');
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(fixtureJson)),
-    );
+    const fixtureJson = loadFixture('stdin-subscription.json');
+    const { output } = await renderPayload(fixtureJson);
 
     expect(output).toContain('claude-sonnet-4-5');
     expect(output).toContain('ctx');
@@ -429,18 +316,14 @@ describe('Scenario 7: NO_COLOR=1 — no ANSI escape sequences', () => {
 
 describe('Scenario 8: empty stdin — silent fail mode', () => {
   it('produces a newline and exit 0 on empty string stdin', async () => {
-    const { output, exitCode } = await captureStdout(() =>
-      runRenderPromax([], makeStream('')),
-    );
+    const { output, exitCode } = await renderPayload('');
 
     expect(exitCode).toBe(0);
     expect(output).toBe('\n');
   });
 
   it('produces a newline and exit 0 on whitespace-only stdin', async () => {
-    const { output, exitCode } = await captureStdout(() =>
-      runRenderPromax([], makeStream('   \n\t  ')),
-    );
+    const { output, exitCode } = await renderPayload('   \n\t  ');
 
     expect(exitCode).toBe(0);
     expect(output).toBe('\n');
@@ -453,67 +336,17 @@ describe('Scenario 8: empty stdin — silent fail mode', () => {
 
 describe('Scenario 9: non-JSON stdin — silent fail mode', () => {
   it('produces a newline and exit 0 for "not json"', async () => {
-    const { output, exitCode } = await captureStdout(() =>
-      runRenderPromax([], makeStream('not json')),
-    );
+    const { output, exitCode } = await renderPayload('not json');
 
     expect(exitCode).toBe(0);
     expect(output).toBe('\n');
   });
 
   it('produces a newline and exit 0 for a truncated JSON payload', async () => {
-    const { output, exitCode } = await captureStdout(() =>
-      runRenderPromax([], makeStream('{"session_id": "abc')),
-    );
+    const { output, exitCode } = await renderPayload('{"session_id": "abc');
 
     expect(exitCode).toBe(0);
     expect(output).toBe('\n');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Scenario 10: No fetch calls, no file I/O — structural guarantee
-// ---------------------------------------------------------------------------
-
-describe('Scenario 10: no fetch, no file I/O', () => {
-  it('does not call global.fetch during rendering', async () => {
-    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response());
-
-    const fixtureJson = loadFixture('stdin-promax.json');
-    await captureStdout(() => runRenderPromax([], makeStream(fixtureJson)));
-
-    expect(fetchSpy).not.toHaveBeenCalled();
-
-    fetchSpy.mockRestore();
-  });
-
-  it('does not import fs (render-promax module has no fs import)', () => {
-    // Structural test: the render-promax module only imports from node:stream,
-    // node:path (not present), and internal modules. We verify by checking
-    // that running a full render cycle with a mocked stream produces output
-    // without accessing the filesystem (beyond fixture loading done here).
-    //
-    // This is satisfied by the implementation's design (no fs import).
-    // We verify indirectly: the function completes successfully with an
-    // in-memory stream, proving it needs no file I/O.
-    const input = JSON.stringify({
-      session_id: 'test',
-      transcript_path: '/t',
-      cwd: '/c',
-      model: { id: 'm', display_name: 'test-model' },
-      workspace: { current_dir: '/c', project_dir: '/c' },
-      version: '1',
-      output_style: { name: 'default' },
-      cost: { total_cost_usd: 0.5, total_duration_ms: 0, total_api_duration_ms: 0, total_lines_added: 0, total_lines_removed: 0 },
-      exceeds_200k_tokens: false,
-      context_window: { used_percentage: 40 },
-    });
-
-    return captureStdout(() => runRenderPromax([], makeStream(input))).then(({ exitCode, output }) => {
-      expect(exitCode).toBe(0);
-      expect(output).toContain('test-model');
-      expect(output).toContain('$0.50');
-    });
   });
 });
 
@@ -563,20 +396,16 @@ describe('Scenario 11: model-scoped weekly windows', () => {
   });
 
   it('renders the server-labelled window after 7d and before cost', async () => {
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(makeInput(
+    const { output } = await renderPayload(makeInput(
         [{ display_name: 'Fable', utilization: 12, resets_at: RESET.toISOString() }],
         0.5,
-      ))),
-    );
+      ));
 
     expect(output).toBe(`${BASE_LINE} · Fable 12% · $0.50\n`);
   });
 
   it('renders the fixture Fable window', async () => {
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(loadFixture('stdin-promax.json'))),
-    );
+    const { output } = await renderPayload(loadFixture('stdin-subscription.json'));
 
     expect(output).toContain('Fable 12%');
     expect(output.indexOf('7d')).toBeLessThan(output.indexOf('Fable'));
@@ -584,22 +413,18 @@ describe('Scenario 11: model-scoped weekly windows', () => {
   });
 
   it('keeps the server order for multiple windows', async () => {
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(makeInput([
+    const { output } = await renderPayload(makeInput([
         { display_name: 'Fable', utilization: 12, resets_at: RESET.toISOString() },
         { display_name: 'Opus', utilization: 40, resets_at: null },
-      ]))),
-    );
+      ]));
 
     expect(output).toBe(`${BASE_LINE} · Fable 12% · Opus 40%\n`);
   });
 
   it('keeps the reset hint when it differs from the 7d reset', async () => {
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(makeInput([
+    const { output } = await renderPayload(makeInput([
         { display_name: 'Fable', utilization: 12, resets_at: new Date(2026, 4, 6, 20, 0, 0).toISOString() },
-      ]))),
-    );
+      ]));
 
     expect(output).toBe(`${BASE_LINE} · Fable 12% [Wed 20:00]\n`);
   });
@@ -612,9 +437,7 @@ describe('Scenario 11: model-scoped weekly windows', () => {
     ])) as { rate_limits: { seven_day: { resets_at: number } } };
     input.rate_limits.seven_day.resets_at = (RESET.getTime() - 589) / 1000;
 
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(JSON.stringify(input))),
-    );
+    const { output } = await renderPayload(JSON.stringify(input));
 
     expect(output).toBe(`${BASE_LINE} · Fable 12%\n`);
   });
@@ -625,27 +448,21 @@ describe('Scenario 11: model-scoped weekly windows', () => {
     ])) as { rate_limits: { seven_day: { resets_at: number } } };
     input.rate_limits.seven_day.resets_at = new Date(2026, 4, 3, 19, 0, 0).getTime() / 1000;
 
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(JSON.stringify(input))),
-    );
+    const { output } = await renderPayload(JSON.stringify(input));
 
     expect(output).toBe('Sonnet 4.6\n5h 0% [21:00] · 7d 81% · Fable 12% [Tue 20:00]\n');
   });
 
   it('omits windows without a utilization figure', async () => {
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(makeInput([
+    const { output } = await renderPayload(makeInput([
         { display_name: 'Fable', utilization: null, resets_at: RESET.toISOString() },
-      ]))),
-    );
+      ]));
 
     expect(output).toBe(`${BASE_LINE}\n`);
   });
 
   it('renders nothing extra for an empty model_scoped array', async () => {
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(makeInput([]))),
-    );
+    const { output } = await renderPayload(makeInput([]));
 
     expect(output).toBe(`${BASE_LINE}\n`);
   });
@@ -658,11 +475,9 @@ describe('Scenario 11: model-scoped weekly windows', () => {
     });
 
     try {
-      const { output } = await captureStdout(() =>
-        runRenderPromax([], makeStream(makeInput([
+      const { output } = await renderPayload(makeInput([
           { display_name: 'Fable', utilization: 12, resets_at: RESET.toISOString() },
-        ]))),
-      );
+        ]));
 
       expect(output).toBe('Sonnet 4.6\n5h 0% [21:00] · 7d 81% [Tue 20:00] · Fable 12%\n');
     } finally {
@@ -677,11 +492,9 @@ describe('Scenario 11: model-scoped weekly windows', () => {
   it('colors the model-scoped figure by tier', async () => {
     vi.stubEnv('NO_COLOR', '');
 
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(makeInput([
+    const { output } = await renderPayload(makeInput([
         { display_name: 'Fable', utilization: 95, resets_at: null },
-      ]))),
-    );
+      ]));
 
     expect(output).toContain('Fable \x1b[31m95%\x1b[0m');
   });
@@ -693,20 +506,18 @@ describe('gateway mode', () => {
   });
 
   it('renders only model and context when a custom base URL is set', async () => {
-    const { output, exitCode } = await captureStdout(() =>
-      runRenderPromax([], makeStream(loadFixture('stdin-promax.json')), {
-        env: { ANTHROPIC_BASE_URL: 'https://gateway.example.com' },
-      }),
+    const { output, exitCode } = await renderPayload(
+      loadFixture('stdin-subscription.json'),
+      { ANTHROPIC_BASE_URL: 'https://gateway.example.com' },
     );
     expect(exitCode).toBe(0);
     expect(output).toBe('claude-sonnet-4-5 · ctx 22%\n');
   });
 
   it('renders usage when the base URL points at Anthropic', async () => {
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(loadFixture('stdin-promax.json')), {
-        env: { ANTHROPIC_BASE_URL: 'https://api.anthropic.com' },
-      }),
+    const { output } = await renderPayload(
+      loadFixture('stdin-subscription.json'),
+      { ANTHROPIC_BASE_URL: 'https://api.anthropic.com' },
     );
     expect(output).toContain('5h');
   });
@@ -714,7 +525,7 @@ describe('gateway mode', () => {
 
 describe('prompt cache segment', () => {
   const stdinWithCache = JSON.stringify({
-    ...JSON.parse(loadFixture('stdin-promax.json')),
+    ...JSON.parse(loadFixture('stdin-subscription.json')),
     prompt_cache: { hit_ratio: 0.874, warm: true, caching_observed: true },
   });
 
@@ -736,25 +547,22 @@ describe('prompt cache segment', () => {
       writable: true,
       configurable: true,
     });
-    const { output } = await captureStdout(() => runRenderPromax([], makeStream(stdinWithCache)));
+    const { output } = await renderPayload(stdinWithCache);
     const [row1, row2] = output.split('\n');
     expect(row1).toBe('claude-sonnet-4-5 · ctx 22% · cache 87%');
     expect(row2).toMatch(/^5h 45%/);
   });
 
   it('is shown behind an LLM gateway', async () => {
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(stdinWithCache), {
-        env: { ANTHROPIC_BASE_URL: 'https://gateway.example.com' },
-      }),
+    const { output } = await renderPayload(
+      stdinWithCache,
+      { ANTHROPIC_BASE_URL: 'https://gateway.example.com' },
     );
     expect(output).toBe('claude-sonnet-4-5 · ctx 22% · cache 87%\n');
   });
 
   it('is omitted when Claude Code sends no prompt cache stats', async () => {
-    const { output } = await captureStdout(() =>
-      runRenderPromax([], makeStream(loadFixture('stdin-promax.json'))),
-    );
+    const { output } = await renderPayload(loadFixture('stdin-subscription.json'));
     expect(output).not.toContain('cache');
   });
 });
