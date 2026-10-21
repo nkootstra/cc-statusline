@@ -53,4 +53,14 @@ macOS and Linux are the primary targets. CI also runs on Windows (Node 22 and 24
 
 ## Release process
 
-Releases are published to npm automatically when a `v*` tag is pushed. Only the maintainer cuts releases.
+Releases are published to npm automatically when a `v*` tag is pushed. Only the maintainer cuts releases. The tag must match the `version` in `package.json`, or the workflow fails before publishing.
+
+A tag with a prerelease suffix, such as `v0.11.1-beta.0`, publishes under the `next` dist-tag instead of `latest`. Use it to let someone test a fix before it ships:
+
+```sh
+git switch --detach <commit to test>
+npm version 0.11.1-beta.0   # commits the bump and creates the tag
+git push origin v0.11.1-beta.0
+```
+
+Push only the tag, so the prerelease version never lands on `main`. Testers install it with `npx @nkootstra/cc-statusline@next`.
