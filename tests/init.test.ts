@@ -1123,8 +1123,9 @@ describe('Windows statusLine command', () => {
   });
 
   describe.runIf(process.platform === 'win32')('installed command', () => {
-    // Claude Code runs statusLine commands through Git Bash when it is installed,
-    // otherwise through cmd or PowerShell; the command has to survive all three.
+    // Claude Code 2.1 spawns statusLine commands as `bash.exe -c <command>` when it
+    // finds Git Bash, and otherwise as `powershell -Command <command>`. cmd is
+    // not a Claude Code path today; it stays covered for other launchers.
     function installedCommand(): Promise<string> {
       return installBuiltBundle(path.join(makeTmpDir(), 'John Smith'), 'win32');
     }
@@ -1151,10 +1152,16 @@ describe('Windows statusLine command', () => {
     });
 
     it('runs under PowerShell', async () => {
-      const encoded = Buffer.from(await installedCommand(), 'utf16le').toString('base64');
       expectRendered(spawnSync(
         'powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          await installedCommand(),
+        ],
         { input: '{}', env: renderEnv(), shell: false, encoding: 'utf8' },
       ));
     });
