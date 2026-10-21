@@ -75,8 +75,8 @@ export function statusLineCommand(
   // Claude Code may run this through Git Bash, cmd, or PowerShell. Bash drops
   // unquoted backslashes; a quoted forward-slash path survives all three.
   return platform === 'win32'
-    ? `node "${bundlePath.replaceAll('\\', '/')}" ${subcommand}`
-    : `'${bundlePath.replaceAll("'", "'\\''")}' ${subcommand}`;
+    ? `node ${bundlePath} ${subcommand}`
+    : `${bundlePath} ${subcommand}`;
 }
 
 async function readSingleKeystroke(): Promise<string> {
