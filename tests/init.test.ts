@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -5,6 +6,7 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   runInit,
+  statusLineCommand,
   type InitDeps,
   type SpawnClaudeResult,
 } from '../src/subcommands/init';
@@ -187,7 +189,7 @@ describe('legacy --plan flag', () => {
     expect(output).toContain('init: --plan is no longer needed and is ignored\n');
     expect(discoverImpl).toHaveBeenCalledOnce();
     expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
-      .toBe(`${bundlePath(tmpDir)} render`);
+      .toBe(`'${bundlePath(tmpDir)}' render`);
     expect(readCache(cachePath(tmpDir))?.credentials.accessToken)
       .toBe(MOCK_CREDENTIALS.accessToken);
   });
@@ -221,7 +223,7 @@ describe('credential detection', () => {
     expect(spawnClaude).not.toHaveBeenCalled();
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
-      .toBe(`${bundlePath(tmpDir)} render`);
+      .toBe(`'${bundlePath(tmpDir)}' render`);
     expect(readCache(cachePath(tmpDir))).toMatchObject({
       credentialSource: { kind: 'claude-code' },
       credentials: { accessToken: MOCK_CREDENTIALS.accessToken },
@@ -248,7 +250,7 @@ describe('credential detection', () => {
     expect(stdinReader).not.toHaveBeenCalled();
     expect(fs.existsSync(cachePath(tmpDir))).toBe(false);
     expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
-      .toBe(`${bundlePath(tmpDir)} render`);
+      .toBe(`'${bundlePath(tmpDir)}' render`);
     expect(output.split('\n').filter((line) => line.includes('claude auth login'))).toHaveLength(1);
   });
 
@@ -323,6 +325,7 @@ describe('credential detection', () => {
   });
 
   it.each([
+    ['render'],
     ['render-promax'],
     ['render-enterprise'],
     ['render --payload-only'],
@@ -337,7 +340,7 @@ describe('credential detection', () => {
 
     expect(await runInit([], baseDeps(tmpDir))).toBe(0);
     expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
-      .toBe(`${bundlePath(tmpDir)} render`);
+      .toBe(`'${bundlePath(tmpDir)}' render`);
   });
 });
 
@@ -880,7 +883,7 @@ describe('settings, platform, and installer regressions', () => {
     expect(readSettings(settingsPath(tmpDir)).statusLine?.command).toBe('/other/statusline');
     expect(await runInit(['--force'], baseDeps(tmpDir))).toBe(0);
     expect(readSettings(settingsPath(tmpDir)).statusLine?.command)
-      .toBe(`${bundlePath(tmpDir)} render`);
+      .toBe(`'${bundlePath(tmpDir)}' render`);
   });
 
   it('emits an absolute node command on Windows', async () => {
@@ -891,14 +894,26 @@ describe('settings, platform, and installer regressions', () => {
     const windowsCommand = readSettings(settingsPath(windowsDir)).statusLine?.command;
     const windowsBundlePath = bundlePath(windowsDir);
     expect(path.isAbsolute(windowsBundlePath)).toBe(true);
-    expect(windowsCommand).toBe(`node ${windowsBundlePath} render`);
+    expect(windowsCommand).toBe(`node "${windowsBundlePath.replaceAll('\\', '/')}" render`);
+  });
+
+  it('rewrites the unquoted Windows command earlier versions wrote', async () => {
+    const windowsDir = makeTmpDir();
+    writeJson(settingsPath(windowsDir), {
+      statusLine: { type: 'command', command: `node ${bundlePath(windowsDir)} render` },
+    });
+    expect(await runInit([], baseDeps(windowsDir, {
+      platformOverride: 'win32',
+    }))).toBe(0);
+    expect(readSettings(settingsPath(windowsDir)).statusLine?.command)
+      .toBe(`node "${bundlePath(windowsDir).replaceAll('\\', '/')}" render`);
   });
 
   it.runIf(process.platform !== 'win32')('makes POSIX bundles executable', async () => {
     const posixDir = makeTmpDir();
     expect(await runInit([], baseDeps(posixDir))).toBe(0);
     expect(readSettings(settingsPath(posixDir)).statusLine?.command)
-      .toBe(`${bundlePath(posixDir)} render`);
+      .toBe(`'${bundlePath(posixDir)}' render`);
     expect(fs.statSync(bundlePath(posixDir)).mode & 0o777).toBe(0o755);
   });
 
@@ -1036,3 +1051,120 @@ describe('explicit credential path security', () => {
     expect(output).toContain('not a regular file');
   });
 });
+
+const BUILT_BUNDLE = path.resolve(__dirname, '..', 'dist', 'cli.cjs');
+
+// An empty config dir means render finds no cache, prints a fixed line, and
+// starts no background refresh that could reach the network.
+function renderEnv(): NodeJS.ProcessEnv {
+  const home = makeTmpDir();
+  return {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    CLAUDE_CONFIG_DIR: path.join(home, '.claude'),
+  };
+}
+
+function expectRendered(result: ReturnType<typeof spawnSync>): void {
+  expect(result.stderr).toBe('');
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain('usage — · run init');
+}
+
+async function installBuiltBundle(home: string, platform: NodeJS.Platform): Promise<string> {
+  expect(fs.existsSync(BUILT_BUNDLE), 'run `npm run build` first').toBe(true);
+  fs.mkdirSync(home, { recursive: true });
+  expect(await runInit([], baseDeps(home, {
+    platformOverride: platform,
+    bundlePathOverride: BUILT_BUNDLE,
+  }))).toBe(0);
+  return readSettings(settingsPath(home)).statusLine?.command ?? '';
+}
+
+describe('POSIX statusLine command', () => {
+  it.runIf(process.platform !== 'win32')('runs under sh when the path has a space and a quote', async () => {
+    const command = await installBuiltBundle(
+      path.join(makeTmpDir(), "Jane O'Brien"),
+      process.platform,
+    );
+    expectRendered(spawnSync('sh', ['-c', command], {
+      input: '{}',
+      env: renderEnv(),
+      shell: false,
+      encoding: 'utf8',
+    }));
+  });
+});
+
+describe('Windows statusLine command', () => {
+  const windowsBundle = 'C:\\Users\\John Smith\\.claude\\cc-statusline\\cc-statusline.js';
+
+  it('quotes a forward-slash path', () => {
+    expect(statusLineCommand(windowsBundle, 'render', 'win32'))
+      .toBe('node "C:/Users/John Smith/.claude/cc-statusline/cc-statusline.js" render');
+  });
+
+  // Off Windows, node resolves "C:/Users/..." relative to cwd, so the exact
+  // Windows command string can run end to end under a real bash.
+  it.runIf(process.platform !== 'win32')('runs under bash', () => {
+    const cwd = makeTmpDir();
+    const target = path.join(cwd, 'C:', 'Users', 'John Smith', '.claude', 'cc-statusline');
+    fs.mkdirSync(target, { recursive: true });
+    fs.copyFileSync(BUILT_BUNDLE, path.join(target, 'cc-statusline.js'));
+
+    expectRendered(spawnSync('bash', ['-c', statusLineCommand(windowsBundle, 'render', 'win32')], {
+      cwd,
+      input: '{}',
+      env: renderEnv(),
+      shell: false,
+      encoding: 'utf8',
+    }));
+  });
+
+  describe.runIf(process.platform === 'win32')('installed command', () => {
+    // Claude Code 2.1 spawns statusLine commands as `bash.exe -c <command>` when it
+    // finds Git Bash, and otherwise as `powershell -Command <command>`. cmd is
+    // not a Claude Code path today; it stays covered for other launchers.
+    function installedCommand(): Promise<string> {
+      return installBuiltBundle(path.join(makeTmpDir(), 'John Smith'), 'win32');
+    }
+
+    it('runs under Git Bash', async () => {
+      const gitBash = process.env['CLAUDE_CODE_GIT_BASH_PATH']
+        ?? 'C:\\Program Files\\Git\\bin\\bash.exe';
+      expectRendered(spawnSync(gitBash, ['-c', await installedCommand()], {
+        input: '{}',
+        env: renderEnv(),
+        shell: false,
+        encoding: 'utf8',
+      }));
+    });
+
+    it('runs under cmd', async () => {
+      expectRendered(spawnSync('cmd.exe', ['/d', '/s', '/c', `"${await installedCommand()}"`], {
+        input: '{}',
+        env: renderEnv(),
+        shell: false,
+        windowsVerbatimArguments: true,
+        encoding: 'utf8',
+      }));
+    });
+
+    it('runs under PowerShell', async () => {
+      expectRendered(spawnSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          await installedCommand(),
+        ],
+        { input: '{}', env: renderEnv(), shell: false, encoding: 'utf8' },
+      ));
+    });
+  });
+});
+

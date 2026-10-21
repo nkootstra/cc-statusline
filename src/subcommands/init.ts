@@ -67,15 +67,16 @@ function getBundleDestPath(homedirOverride?: string): string {
   return path.join(getInstallDir(homedirOverride), 'cc-statusline.js');
 }
 
-function commandFor(
-  installDir: string,
+export function statusLineCommand(
+  bundlePath: string,
   subcommand: string,
   platform: NodeJS.Platform,
 ): string {
-  const bundlePath = path.join(installDir, 'cc-statusline.js');
+  // Claude Code may run this through Git Bash, cmd, or PowerShell. Bash drops
+  // unquoted backslashes; a quoted forward-slash path survives all three.
   return platform === 'win32'
-    ? `node ${bundlePath} ${subcommand}`
-    : `${bundlePath} ${subcommand}`;
+    ? `node "${bundlePath.replaceAll('\\', '/')}" ${subcommand}`
+    : `'${bundlePath.replaceAll("'", "'\\''")}' ${subcommand}`;
 }
 
 async function readSingleKeystroke(): Promise<string> {
@@ -183,12 +184,16 @@ export async function runInit(args: string[], deps: InitDeps = {}): Promise<numb
 
   const installDir = getInstallDir(deps.homedirOverride);
   const destinationPath = getBundleDestPath(deps.homedirOverride);
-  const command = commandFor(installDir, 'render', platform);
+  const command = statusLineCommand(destinationPath, 'render', platform);
   const settings = readSettings(settingsFilePath);
   const settingsPreparation = await prepareSettings(
     settings,
     command,
-    RENDER_SUBCOMMANDS.map((subcommand) => commandFor(installDir, subcommand, platform)),
+    RENDER_SUBCOMMANDS.flatMap((subcommand) => [
+      statusLineCommand(destinationPath, subcommand, platform),
+      // Before 0.11.1 the path was written unquoted, with backslashes on Windows.
+      `${platform === 'win32' ? 'node ' : ''}${destinationPath} ${subcommand}`,
+    ]),
     forceFlag,
     canInteract,
     stdinReader,
