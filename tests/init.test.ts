@@ -1052,31 +1052,53 @@ describe('explicit credential path security', () => {
   });
 });
 
+const BUILT_BUNDLE = path.resolve(__dirname, '..', 'dist', 'cli.cjs');
+
+// An empty config dir means render finds no cache, prints a fixed line, and
+// starts no background refresh that could reach the network.
+function renderEnv(): NodeJS.ProcessEnv {
+  const home = makeTmpDir();
+  return {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    CLAUDE_CONFIG_DIR: path.join(home, '.claude'),
+  };
+}
+
+function expectRendered(result: ReturnType<typeof spawnSync>): void {
+  expect(result.stderr).toBe('');
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain('usage — · run init');
+}
+
+async function installBuiltBundle(home: string, platform: NodeJS.Platform): Promise<string> {
+  expect(fs.existsSync(BUILT_BUNDLE), 'run `npm run build` first').toBe(true);
+  fs.mkdirSync(home, { recursive: true });
+  expect(await runInit([], baseDeps(home, {
+    platformOverride: platform,
+    bundlePathOverride: BUILT_BUNDLE,
+  }))).toBe(0);
+  return readSettings(settingsPath(home)).statusLine?.command ?? '';
+}
+
 describe('POSIX statusLine command', () => {
   it.runIf(process.platform !== 'win32')('runs under sh when the path has a space and a quote', async () => {
-    const home = path.join(makeTmpDir(), "Jane O'Brien");
-    fs.mkdirSync(home);
-    const bundle = path.join(home, 'echo-bundle.js');
-    fs.writeFileSync(
-      bundle,
-      "#!/usr/bin/env node\nprocess.stdout.write('ran ' + process.argv.slice(2).join(' '));\n",
-      'utf8',
+    const command = await installBuiltBundle(
+      path.join(makeTmpDir(), "Jane O'Brien"),
+      process.platform,
     );
-    expect(await runInit([], baseDeps(home, {
-      platformOverride: process.platform,
-      bundlePathOverride: bundle,
-    }))).toBe(0);
-    const command = readSettings(settingsPath(home)).statusLine?.command ?? '';
-
-    const result = spawnSync('sh', ['-c', command], { shell: false, encoding: 'utf8' });
-    expect(result.stderr).toBe('');
-    expect(result.stdout).toBe('ran render');
+    expectRendered(spawnSync('sh', ['-c', command], {
+      input: '{}',
+      env: renderEnv(),
+      shell: false,
+      encoding: 'utf8',
+    }));
   });
 });
 
 describe('Windows statusLine command', () => {
   const windowsBundle = 'C:\\Users\\John Smith\\.claude\\cc-statusline\\cc-statusline.js';
-  const echoBundle = "process.stdout.write('ran ' + process.argv.slice(2).join(' '));\n";
 
   it('quotes a forward-slash path', () => {
     expect(statusLineCommand(windowsBundle, 'render', 'win32'))
@@ -1089,62 +1111,53 @@ describe('Windows statusLine command', () => {
     const cwd = makeTmpDir();
     const target = path.join(cwd, 'C:', 'Users', 'John Smith', '.claude', 'cc-statusline');
     fs.mkdirSync(target, { recursive: true });
-    fs.writeFileSync(path.join(target, 'cc-statusline.js'), echoBundle, 'utf8');
+    fs.copyFileSync(BUILT_BUNDLE, path.join(target, 'cc-statusline.js'));
 
-    const result = spawnSync('bash', ['-c', statusLineCommand(windowsBundle, 'render', 'win32')], {
+    expectRendered(spawnSync('bash', ['-c', statusLineCommand(windowsBundle, 'render', 'win32')], {
       cwd,
+      input: '{}',
+      env: renderEnv(),
       shell: false,
       encoding: 'utf8',
-    });
-    expect(result.stderr).toBe('');
-    expect(result.stdout).toBe('ran render');
+    }));
   });
 
   describe.runIf(process.platform === 'win32')('installed command', () => {
     // Claude Code runs statusLine commands through Git Bash when it is installed,
     // otherwise through cmd or PowerShell; the command has to survive all three.
-    async function installedCommand(): Promise<string> {
-      const homeWithSpace = path.join(makeTmpDir(), 'John Smith');
-      fs.mkdirSync(homeWithSpace);
-      const bundle = path.join(homeWithSpace, 'echo-bundle.js');
-      fs.writeFileSync(bundle, echoBundle, 'utf8');
-      expect(await runInit([], baseDeps(homeWithSpace, {
-        platformOverride: 'win32',
-        bundlePathOverride: bundle,
-      }))).toBe(0);
-      return readSettings(settingsPath(homeWithSpace)).statusLine?.command ?? '';
+    function installedCommand(): Promise<string> {
+      return installBuiltBundle(path.join(makeTmpDir(), 'John Smith'), 'win32');
     }
 
     it('runs under Git Bash', async () => {
       const gitBash = process.env['CLAUDE_CODE_GIT_BASH_PATH']
         ?? 'C:\\Program Files\\Git\\bin\\bash.exe';
-      const result = spawnSync(gitBash, ['-c', await installedCommand()], {
+      expectRendered(spawnSync(gitBash, ['-c', await installedCommand()], {
+        input: '{}',
+        env: renderEnv(),
         shell: false,
         encoding: 'utf8',
-      });
-      expect(result.stderr).toBe('');
-      expect(result.stdout).toBe('ran render');
+      }));
     });
 
     it('runs under cmd', async () => {
-      const result = spawnSync('cmd.exe', ['/d', '/s', '/c', `"${await installedCommand()}"`], {
+      expectRendered(spawnSync('cmd.exe', ['/d', '/s', '/c', `"${await installedCommand()}"`], {
+        input: '{}',
+        env: renderEnv(),
         shell: false,
         windowsVerbatimArguments: true,
         encoding: 'utf8',
-      });
-      expect(result.stderr).toBe('');
-      expect(result.stdout).toBe('ran render');
+      }));
     });
 
     it('runs under PowerShell', async () => {
       const encoded = Buffer.from(await installedCommand(), 'utf16le').toString('base64');
-      const result = spawnSync(
+      expectRendered(spawnSync(
         'powershell.exe',
         ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
-        { shell: false, encoding: 'utf8' },
-      );
-      expect(result.stderr).toBe('');
-      expect(result.stdout).toBe('ran render');
+        { input: '{}', env: renderEnv(), shell: false, encoding: 'utf8' },
+      ));
     });
   });
 });
+
