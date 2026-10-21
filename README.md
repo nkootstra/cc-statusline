@@ -68,14 +68,14 @@ Init does the following:
    {
      "statusLine": {
        "type": "command",
-       "command": "/Users/you/.claude/cc-statusline/cc-statusline.js render",
+       "command": "'/Users/you/.claude/cc-statusline/cc-statusline.js' render",
        "padding": 2,
        "refreshInterval": 10
      }
    }
    ```
 
-   On Windows the command is `node <path>\cc-statusline.js render`.
+   On Windows the command is `node "C:/Users/you/.claude/cc-statusline/cc-statusline.js" render`. The path is quoted and uses forward slashes so it works whether Claude Code runs it through Git Bash, cmd, or PowerShell.
 
 Claude Code only runs custom statusline commands in trusted workspaces. If you see `statusline skipped · restart to fix`, accept the workspace trust prompt for the project and restart Claude Code.
 
@@ -359,6 +359,10 @@ Another client signed in to the same account is using the usage endpoint's quota
 ### Figures from the wrong account after `/login`
 
 The cache is rebuilt on the next refresh, within about a minute. To force it, run `npx @nkootstra/cc-statusline --force`.
+
+### Blank statusline on Windows
+
+Versions before 0.11.1 wrote `node C:\Users\...\cc-statusline.js render` without quotes. When Claude Code runs it through Git Bash, Bash strips the backslashes and Node fails with `MODULE_NOT_FOUND`. Re-run `npx @nkootstra/cc-statusline` to rewrite the command.
 
 ### `init: settings.json already has a different statusLine.command`
 
